@@ -549,3 +549,226 @@ function AuthGate() {
 
   return (
     <div style={{ fontFamily: "Inter, sans-serif", minHeight: "100vh", background: TOKENS.ink, display: "flex", alignItems: "center", justifyContent: "center", padding: "24px 16px" }}>
+      <style>{FONT_IMPORT}{`button{font-family:Inter,sans-serif;cursor:pointer;} input{font-family:Inter,sans-serif;border:1px solid #333;border-radius:6px;padding:11px;font-size:16px;width:100%;box-sizing:border-box;background:#1E2733;color:white;}`}</style>
+      <div style={{ width: "100%", maxWidth: 340, color: "white", textAlign: "center" }}>
+        <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontWeight: 800, fontSize: 30 }}>AQUALEC</div>
+        <div style={{ color: "#9AA3AC", fontSize: 13, marginBottom: 26, textTransform: "uppercase", letterSpacing: ".05em" }}>Team sign in</div>
+
+        {checkEmail ? (
+          <div style={{ fontSize: 13.5, color: "#AEB6BD", lineHeight: 1.6 }}>
+            Check your email to confirm your account, then come back and sign in.
+            <button onClick={() => { setCheckEmail(false); setMode("signin"); }} style={{ display: "block", marginTop: 16, width: "100%", background: TOKENS.accent, border: "none", color: "white", borderRadius: 8, padding: "12px 0", fontWeight: 700 }}>Back to sign in</button>
+          </div>
+        ) : (
+          <div style={{ textAlign: "left" }}>
+            <div style={{ marginBottom: 10 }}><input type="email" placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} /></div>
+            <div style={{ marginBottom: 10 }}><input type="password" placeholder="Password" value={password} onChange={(e) => setPassword(e.target.value)} /></div>
+            {error && <div style={{ color: "#E88", fontSize: 12.5, marginBottom: 10 }}>{error}</div>}
+            <button disabled={busy || !email || !password} onClick={submit} style={{ width: "100%", background: TOKENS.accent, border: "none", color: "white", borderRadius: 8, padding: "12px 0", fontWeight: 700, opacity: busy ? 0.6 : 1 }}>
+              {busy ? "…" : mode === "signup" ? "Create account" : "Sign in"}
+            </button>
+            <button onClick={() => { setMode(mode === "signup" ? "signin" : "signup"); setError(""); }} style={{ marginTop: 12, background: "none", border: "none", color: "#9AA3AC", fontSize: 12.5, width: "100%" }}>
+              {mode === "signup" ? "Already have an account? Sign in" : "New team member? Create an account"}
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ProfileSetup({ session, onDone, onSignOut }) {
+  const [name, setName] = useState("");
+  const [trade, setTrade] = useState("");
+  const [colour, setColour] = useState(TECH_COLOURS[0]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const submit = async () => {
+    if (!name.trim()) return;
+    setBusy(true); setError("");
+    const { data, error: err } = await supabase.from("profiles").insert({ id: session.user.id, name: name.trim(), trade: trade.trim(), colour }).select().single();
+    setBusy(false);
+    if (err) { setError(err.message); return; }
+    onDone(data);
+  };
+
+  return (
+    <div style={{ fontFamily: "Inter, sans-serif", minHeight: "100vh", background: TOKENS.ink, display: "flex", alignItems: "center", justifyContent: "center", padding: "24px 16px" }}>
+      <style>{FONT_IMPORT}{`button{font-family:Inter,sans-serif;cursor:pointer;} input{font-family:Inter,sans-serif;border:1px solid #333;border-radius:6px;padding:11px;font-size:16px;width:100%;box-sizing:border-box;background:#1E2733;color:white;}`}</style>
+      <div style={{ width: "100%", maxWidth: 340, color: "white" }}>
+        <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontWeight: 800, fontSize: 26, textAlign: "center" }}>Welcome</div>
+        <div style={{ color: "#9AA3AC", fontSize: 13, marginBottom: 22, textAlign: "center" }}>Set up your profile — {session.user.email}</div>
+        <div style={{ marginBottom: 10 }}><input placeholder="Full name" value={name} onChange={(e) => setName(e.target.value)} /></div>
+        <div style={{ marginBottom: 12 }}><input placeholder="Trade / role" value={trade} onChange={(e) => setTrade(e.target.value)} /></div>
+        <div style={{ display: "flex", gap: 6, marginBottom: 18, flexWrap: "wrap" }}>
+          {TECH_COLOURS.map((c) => (
+            <button key={c} onClick={() => setColour(c)} style={{ width: 26, height: 26, borderRadius: "50%", background: c, border: colour === c ? "2px solid white" : "2px solid transparent" }} />
+          ))}
+        </div>
+        {error && <div style={{ color: "#E88", fontSize: 12.5, marginBottom: 10 }}>{error}</div>}
+        <button disabled={busy || !name.trim()} onClick={submit} style={{ width: "100%", background: TOKENS.accent, border: "none", color: "white", borderRadius: 8, padding: "12px 0", fontWeight: 700, opacity: busy ? 0.6 : 1 }}>{busy ? "…" : "Start using the app"}</button>
+        <button onClick={onSignOut} style={{ marginTop: 12, background: "none", border: "none", color: "#9AA3AC", fontSize: 12.5, width: "100%" }}>Sign out</button>
+      </div>
+    </div>
+  );
+}
+
+/* ================= DESKTOP SIDEBAR ================= */
+function Sidebar({ view, setView, jobs, events, saveState, currentUser, onSignOut, onQuickJob }) {
+  const openQuotes = jobs.filter((j) => j.kind === "quote" && j.status === "quote").length;
+  const inProgress = jobs.filter((j) => j.status === "in_progress").length;
+  const readyToInvoice = jobs.filter((j) => j.status === "complete").length;
+  const todayKey = toKey(new Date());
+  const todayCount = events.filter((e) => e.date === todayKey).length;
+
+  const items = [
+    { id: "diary", label: "Diary", sub: `${todayCount} today` },
+    { id: "jobs", label: "Jobs & Quotes", sub: `${inProgress} active` },
+    { id: "customers", label: "Customers", sub: null },
+    { id: "team", label: "Team", sub: null },
+  ];
+
+  return (
+    <div className="sidebar-desktop" style={{ width: 210, background: TOKENS.ink, color: "#EDEFEA", flexDirection: "column", padding: "20px 0", flexShrink: 0 }}>
+      <div style={{ padding: "0 20px 18px", borderBottom: "1px solid rgba(255,255,255,0.1)", marginBottom: 10 }}>
+        <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontWeight: 800, fontSize: 22, letterSpacing: ".01em", lineHeight: 1 }}>AQUALEC</div>
+        <div style={{ fontSize: 11, color: "#9AA3AC", marginTop: 3, letterSpacing: ".04em", textTransform: "uppercase" }}>Job Tracker</div>
+      </div>
+
+      <div style={{ padding: "0 20px 14px" }}>
+        <button onClick={onQuickJob} className="btn-primary" style={{ width: "100%", border: "none", borderRadius: 8, padding: "10px 0", fontWeight: 700, fontSize: 13, display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+          <Plus size={15} /> Quick job number
+        </button>
+      </div>
+
+      <div style={{ flex: 1 }}>
+        {items.map((it) => (
+          <button key={it.id} className="btn-ghost" onClick={() => setView(it.id)}
+            style={{ display: "block", width: "100%", textAlign: "left", padding: "10px 20px", color: view === it.id ? "white" : "#AEB6BD", background: view === it.id ? "rgba(217,72,15,0.18)" : "transparent", borderLeft: view === it.id ? `3px solid ${TOKENS.accent}` : "3px solid transparent", fontWeight: 600, fontSize: 14 }}>
+            {it.label}
+            {it.sub && <div style={{ fontSize: 11, color: "#8A93A0", fontWeight: 500, marginTop: 1 }}>{it.sub}</div>}
+          </button>
+        ))}
+        {openQuotes > 0 && <div style={{ margin: "14px 20px 0", padding: "8px 10px", background: "rgba(200,135,26,0.15)", borderRadius: 6, fontSize: 11.5, color: "#E3B565" }}>{openQuotes} quote{openQuotes !== 1 ? "s" : ""} awaiting a decision</div>}
+        {readyToInvoice > 0 && <div style={{ margin: "8px 20px 0", padding: "8px 10px", background: "rgba(47,125,69,0.18)", borderRadius: 6, fontSize: 11.5, color: "#6FCB8A" }}>{readyToInvoice} job{readyToInvoice !== 1 ? "s" : ""} ready to invoice</div>}
+      </div>
+
+      <div style={{ padding: "12px 20px 0", borderTop: "1px solid rgba(255,255,255,0.08)" }}>
+        {currentUser && (
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+            <span style={{ width: 9, height: 9, borderRadius: "50%", background: currentUser.colour, display: "inline-block" }} />
+            <div style={{ fontSize: 12.5, fontWeight: 600 }}>{currentUser.name}</div>
+          </div>
+        )}
+        <button className="btn-ghost" onClick={onSignOut} style={{ fontSize: 11.5, padding: 0, color: "#8A93A0" }}>Sign out</button>
+        <div style={{ fontSize: 10.5, color: "#6E7680", marginTop: 8 }}>{saveState === "saving" ? "Syncing…" : saveState === "error" ? "Sync failed" : "Synced · shared with your team"}</div>
+      </div>
+    </div>
+  );
+}
+
+/* ================= MOBILE CHROME ================= */
+function MobileTopBar({ currentUser, saveState, onSignOut, onQuickJob }) {
+  return (
+    <div className="mobile-topbar">
+      <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+        <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontWeight: 800, fontSize: 18, flexShrink: 0 }}>AQUALEC</div>
+        {currentUser && (
+          <button onClick={onSignOut} style={{ display: "flex", alignItems: "center", gap: 5, background: "rgba(255,255,255,0.08)", border: "none", borderRadius: 20, padding: "4px 9px 4px 6px", color: "white", fontSize: 11.5, fontWeight: 600, overflow: "hidden" }}>
+            <span style={{ width: 7, height: 7, borderRadius: "50%", background: currentUser.colour, display: "inline-block", flexShrink: 0 }} />
+            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{currentUser.name}</span>
+          </button>
+        )}
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <span style={{ width: 6, height: 6, borderRadius: "50%", background: saveState === "error" ? TOKENS.red : TOKENS.accent2, flexShrink: 0 }} title={saveState === "saving" ? "Syncing…" : "Synced"} />
+        <button onClick={onQuickJob} style={{ display: "flex", alignItems: "center", gap: 5, background: TOKENS.accent, border: "none", color: "white", borderRadius: 20, padding: "7px 12px", fontWeight: 700, fontSize: 12.5 }}>
+          <Plus size={14} /> Job
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function MobileTabBar({ view, setView }) {
+  return (
+    <div className="mobile-tabbar">
+      {NAV_ITEMS.map((it) => {
+        const active = view === it.id;
+        return (
+          <button key={it.id} onClick={() => setView(it.id)} style={{ flex: 1, background: "none", border: "none", display: "flex", flexDirection: "column", alignItems: "center", gap: 3, padding: "9px 4px 8px", color: active ? "white" : "#8A93A0" }}>
+            <it.Icon size={19} color={active ? TOKENS.accent : "#8A93A0"} strokeWidth={active ? 2.3 : 2} />
+            <span style={{ fontSize: 10.5, fontWeight: 600 }}>{it.label}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/* ================= DIARY ================= */
+function DiaryView({ cursor, setCursor, today, selectedDay, setSelectedDay, eventsByDay, users, activeTechs, setActiveTechs, jobById, userById, onNewEvent, onEditEvent, onOpenJob, onLogWork }) {
+  const year = cursor.getFullYear();
+  const month = cursor.getMonth();
+  const first = new Date(year, month, 1);
+  const startOffset = (first.getDay() + 6) % 7;
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const cells = [];
+  for (let i = 0; i < startOffset; i++) cells.push(null);
+  for (let d = 1; d <= daysInMonth; d++) cells.push(new Date(year, month, d));
+  while (cells.length % 7 !== 0) cells.push(null);
+
+  const toggleTech = (id) => {
+    setActiveTechs((cur) => {
+      const base = cur ?? users.map((u) => u.id);
+      if (base.includes(id)) { const next = base.filter((x) => x !== id); return next.length ? next : []; }
+      return [...base, id];
+    });
+  };
+
+  const dayEvents = eventsByDay[selectedDay] || [];
+  const selDateObj = fromKey(selectedDay);
+
+  return (
+    <div className="diary-layout">
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16, flexWrap: "wrap", gap: 8 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <button className="btn" onClick={() => setCursor(new Date(year, month - 1, 1))}><ChevronLeft size={15} /></button>
+            <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontWeight: 700, fontSize: 22, minWidth: 150 }}>{monthLabel(cursor)}</div>
+            <button className="btn" onClick={() => setCursor(new Date(year, month + 1, 1))}><ChevronRight size={15} /></button>
+            <button className="btn hide-mobile" onClick={() => { setCursor(new Date()); setSelectedDay(toKey(new Date())); }}>Today</button>
+          </div>
+          <button className="btn btn-primary hide-mobile" onClick={() => onNewEvent(selectedDay)}>+ Book visit</button>
+        </div>
+
+        <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
+          {users.map((u) => {
+            const on = (activeTechs ?? users.map((x) => x.id)).includes(u.id);
+            return (
+              <button key={u.id} onClick={() => toggleTech(u.id)}
+                style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 10px", borderRadius: 20, border: `1px solid ${on ? u.colour : TOKENS.line}`, background: on ? `${u.colour}1A` : "white", fontSize: 12.5, fontWeight: 600, color: on ? TOKENS.ink : TOKENS.slateLight }}>
+                <span style={{ width: 8, height: 8, borderRadius: "50%", background: u.colour, display: "inline-block" }} />
+                {u.name}
+              </button>
+            );
+          })}
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 5, fontSize: 10.5, color: TOKENS.slateLight, fontWeight: 700, textTransform: "uppercase", marginBottom: 6 }}>
+          {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((d) => <div key={d} style={{ textAlign: "center" }}>{d}</div>)}
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 5 }}>
+          {cells.map((d, i) => {
+            if (!d) return <div key={i} className="cal-cell" />;
+            const key = toKey(d);
+            const isToday = toKey(today) === key;
+            const isSel = key === selectedDay;
+            const evs = eventsByDay[key] || [];
+            return (
+              <button key={i} className="cal-cell" onClick={() => setSelectedDay(key)}
+                style={{ textAlign: "left", padding: 6, borderRadius: 8, cursor: "pointer", background: isSel ? "white" : "rgba(255,255,255,0.55)", border: `1.5px solid ${isSel ? TOKENS.accent : isToday ? TOKENS.accent2 : "transparent"}`, display: "flex", flexDirection: "column", gap: 2, overflow: "hidden" }}>
+                <div style={{ fontSize: 12, fontWeight: isToday ? 800 : 600, color: isToday ? TOKENS.accent2 : TOKENS.ink }}>{d.getDate()}</div>
+                {evs.length > 0 && (
+                  <div className="hide-mobile" style={{ display: "flex", flexDirection: "column", gap: 2 }}>
