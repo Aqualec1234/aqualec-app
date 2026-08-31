@@ -1202,3 +1202,247 @@ function CustomersView({ customers, jobs, openCustomerId, setOpenCustomerId, onA
             const meta = STATUS_META[j.status];
             return (
               <div key={j.id} onClick={() => onOpenJob(j.id)} style={{ background: "white", border: `1px solid ${TOKENS.line}`, borderRadius: 9, padding: "10px 14px", display: "flex", alignItems: "center", gap: 12, cursor: "pointer", flexWrap: "wrap" }}>
+                <div className="ticket" style={{ fontWeight: 700, fontSize: 12.5, background: TOKENS.paper, border: `1px dashed ${TOKENS.line}`, borderRadius: 6, padding: "3px 7px" }}>{j.number}</div>
+                <div style={{ flex: 1, fontSize: 13, minWidth: 100 }}>{j.description || j.jobType}</div>
+                <span style={{ fontSize: 11, fontWeight: 700, color: meta.colour, background: `${meta.colour}18`, borderRadius: 20, padding: "3px 9px" }}>{meta.label}</span>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
+
+  const filtered = customers.filter((c) => !search || c.name.toLowerCase().includes(search.toLowerCase()) || (c.address || "").toLowerCase().includes(search.toLowerCase()));
+
+  return (
+    <div>
+      <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontWeight: 700, fontSize: 22, marginBottom: 16 }}>Customers</div>
+      <div className="customers-layout">
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <input placeholder="Search customers…" value={search} onChange={(e) => setSearch(e.target.value)} style={{ marginBottom: 12 }} />
+          {filtered.length === 0 && <div style={{ color: TOKENS.slateLight, fontSize: 13.5, padding: "20px 4px" }}>No customers yet — add one, or they'll be created automatically the first time you raise a job for them.</div>}
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {filtered.map((c) => {
+              const count = jobs.filter((j) => j.customerId === c.id).length;
+              return (
+                <div key={c.id} onClick={() => setOpenCustomerId(c.id)} style={{ background: "white", border: `1px solid ${TOKENS.line}`, borderRadius: 9, padding: "12px 14px", display: "flex", alignItems: "center", gap: 12, cursor: "pointer", flexWrap: "wrap" }}>
+                  <div style={{ flex: 1, minWidth: 100 }}>
+                    <div style={{ fontWeight: 700, fontSize: 14 }}>{c.name}</div>
+                    <div style={{ fontSize: 12, color: TOKENS.slate, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{c.address}</div>
+                  </div>
+                  <div style={{ fontSize: 11.5, color: TOKENS.slateLight }}>{count} job{count !== 1 ? "s" : ""}</div>
+                  <button className="btn-ghost" onClick={(e) => { e.stopPropagation(); onRemove(c.id); }}>Remove</button>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+        <div className="customers-side">
+          <div style={{ background: "white", border: `1px solid ${TOKENS.line}`, borderRadius: 9, padding: 16 }}>
+            <div style={{ fontSize: 13.5, fontWeight: 700, marginBottom: 10 }}>Add a customer</div>
+            <div className="field"><label>Name</label><input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Mrs. Patel" /></div>
+            <div className="field"><label>Address</label><input value={address} onChange={(e) => setAddress(e.target.value)} placeholder="e.g. 14 Elm Road" /></div>
+            <div className="field"><label>Phone</label><input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="07…" /></div>
+            <button className="btn btn-primary" style={{ width: "100%" }} onClick={() => { if (name.trim()) { onAdd(name.trim(), address.trim(), phone.trim()); setName(""); setAddress(""); setPhone(""); } }}>Add customer</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ================= TEAM ================= */
+function TeamView({ users, jobs, currentUserId }) {
+  return (
+    <div style={{ maxWidth: 560 }}>
+      <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontWeight: 700, fontSize: 22, marginBottom: 6 }}>Team</div>
+      <div style={{ fontSize: 12.5, color: TOKENS.slateLight, marginBottom: 14 }}>Anyone who's created an account shows up here automatically — share the app link with new team members and they can sign themselves up.</div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {users.map((u) => {
+          const active = jobs.filter((j) => j.assignedTo === u.id && !["complete", "invoiced"].includes(j.status)).length;
+          return (
+            <div key={u.id} style={{ background: "white", border: `1px solid ${TOKENS.line}`, borderRadius: 9, padding: "10px 14px", display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+              <span style={{ width: 12, height: 12, borderRadius: "50%", background: u.colour, display: "inline-block" }} />
+              <div style={{ flex: 1, minWidth: 120 }}>
+                <div style={{ fontWeight: 700, fontSize: 14 }}>{u.name}{u.id === currentUserId && <span style={{ fontSize: 10.5, color: TOKENS.accent2, fontWeight: 700, marginLeft: 6 }}>YOU</span>}</div>
+                <div style={{ fontSize: 12, color: TOKENS.slate }}>{u.trade || "Technician"} · {active} active job{active !== 1 ? "s" : ""}</div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/* ================= MODALS ================= */
+function ModalShell({ title, onClose, children }) {
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-box" onClick={(e) => e.stopPropagation()}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+          <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontWeight: 700, fontSize: 20 }}>{title}</div>
+          <button className="btn-ghost" onClick={onClose} style={{ fontSize: 18, padding: 2 }}><X size={20} /></button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function JobModal({ modal, users, customers, currentUserId, onClose, onCreate }) {
+  const preset = modal.presetCustomer;
+  const [kind, setKind] = useState(modal.kind || "job");
+  const [customerMode, setCustomerMode] = useState(preset ? "existing" : (customers.length ? "existing" : "new"));
+  const [selectedCustomerId, setSelectedCustomerId] = useState(preset?.id || "");
+  const [customer, setCustomer] = useState("");
+  const [address, setAddress] = useState("");
+  const [phone, setPhone] = useState("");
+  const [description, setDescription] = useState("");
+  const [assignedTo, setAssignedTo] = useState(currentUserId || "");
+  const [jobType, setJobType] = useState("service");
+  const [priority, setPriority] = useState("normal");
+
+  const selectedCustomer = customers.find((c) => c.id === selectedCustomerId);
+  const canSubmit = customerMode === "existing" ? !!selectedCustomerId : customer.trim().length > 0;
+
+  const handleSubmit = () => {
+    if (customerMode === "existing" && selectedCustomer) {
+      onCreate({ kind, customerId: selectedCustomer.id, customer: selectedCustomer.name, address: selectedCustomer.address, phone: selectedCustomer.phone, description, assignedTo, jobType, priority });
+    } else {
+      onCreate({ kind, customerId: null, customer: customer.trim(), address, phone, description, assignedTo, jobType, priority });
+    }
+  };
+
+  return (
+    <ModalShell title={kind === "quote" ? "New quote" : "New job"} onClose={onClose}>
+      <div className="field">
+        <label>Type</label>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button className="btn" onClick={() => setKind("quote")} style={{ flex: 1, background: kind === "quote" ? TOKENS.ink : "white", color: kind === "quote" ? "white" : TOKENS.ink }}>Quote</button>
+          <button className="btn" onClick={() => setKind("job")} style={{ flex: 1, background: kind === "job" ? TOKENS.ink : "white", color: kind === "job" ? "white" : TOKENS.ink }}>Confirmed job</button>
+        </div>
+      </div>
+
+      <div className="field">
+        <label>Customer</label>
+        <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+          <button className="btn" onClick={() => setCustomerMode("existing")} style={{ flex: 1, background: customerMode === "existing" ? TOKENS.ink : "white", color: customerMode === "existing" ? "white" : TOKENS.ink }}>Existing</button>
+          <button className="btn" onClick={() => setCustomerMode("new")} style={{ flex: 1, background: customerMode === "new" ? TOKENS.ink : "white", color: customerMode === "new" ? "white" : TOKENS.ink }}>New customer</button>
+        </div>
+        {customerMode === "existing" ? (
+          customers.length ? (
+            <>
+              <select value={selectedCustomerId} onChange={(e) => setSelectedCustomerId(e.target.value)}>
+                <option value="">— Select a customer —</option>
+                {customers.map((c) => <option key={c.id} value={c.id}>{c.name}{c.address ? ` · ${c.address}` : ""}</option>)}
+              </select>
+              {selectedCustomer && <div style={{ fontSize: 12, color: TOKENS.slateLight, marginTop: 6 }}>{selectedCustomer.address}{selectedCustomer.phone ? ` · ${selectedCustomer.phone}` : ""}</div>}
+            </>
+          ) : (
+            <div style={{ fontSize: 12.5, color: TOKENS.slateLight }}>No customers saved yet — switch to "New customer".</div>
+          )
+        ) : (
+          <>
+            <div className="field"><input value={customer} onChange={(e) => setCustomer(e.target.value)} placeholder="Customer name, e.g. Mrs. Patel" /></div>
+            <div className="field"><input value={address} onChange={(e) => setAddress(e.target.value)} placeholder="Site address" /></div>
+            <div className="field"><input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="Phone" /></div>
+          </>
+        )}
+      </div>
+
+      <div style={{ display: "flex", gap: 10 }}>
+        <div className="field" style={{ flex: 1 }}>
+          <label>Job type</label>
+          <select value={jobType} onChange={(e) => setJobType(e.target.value)}>{Object.entries(JOB_TYPES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select>
+        </div>
+        <div className="field" style={{ flex: 1 }}>
+          <label>Priority</label>
+          <select value={priority} onChange={(e) => setPriority(e.target.value)}>{Object.entries(PRIORITY_META).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}</select>
+        </div>
+      </div>
+      <div className="field"><label>Job description (optional — can add later)</label><textarea rows={3} value={description} onChange={(e) => setDescription(e.target.value)} placeholder="e.g. Annual boiler service, Vaillant ecoTEC" /></div>
+      <div className="field">
+        <label>Assign to</label>
+        <select value={assignedTo} onChange={(e) => setAssignedTo(e.target.value)}>
+          <option value="">Unassigned</option>
+          {users.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+        </select>
+      </div>
+      <button className="btn btn-primary" style={{ width: "100%", marginTop: 6 }} disabled={!canSubmit} onClick={handleSubmit}>
+        Create {kind === "quote" ? "quote" : "job"} number
+      </button>
+    </ModalShell>
+  );
+}
+
+function EventModal({ modal, users, jobs, onClose, onCreate, onUpdate, onDelete }) {
+  const editing = modal.event;
+  const preset = modal.presetJob;
+  const [title, setTitle] = useState(editing?.title || (preset ? `Visit — ${preset.customer}` : ""));
+  const [date, setDate] = useState(editing?.date || modal.date);
+  const [time, setTime] = useState(editing?.time || "09:00");
+  const [duration, setDuration] = useState(editing?.duration || "1h");
+  const [assignedTo, setAssignedTo] = useState(editing?.assignedTo || preset?.assignedTo || (users[0]?.id ?? ""));
+  const [jobId, setJobId] = useState(editing?.jobId || preset?.id || "");
+  const [notes, setNotes] = useState(editing?.notes || "");
+
+  const linkedJobs = jobs.filter((j) => !["complete", "invoiced"].includes(j.status));
+
+  return (
+    <ModalShell title={editing ? "Edit booking" : "Book a visit"} onClose={onClose}>
+      <div className="field"><label>Title</label><input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="e.g. Boiler service, Site survey" /></div>
+      <div style={{ display: "flex", gap: 10 }}>
+        <div className="field" style={{ flex: 1 }}><label>Date</label><input type="date" value={date} onChange={(e) => setDate(e.target.value)} /></div>
+        <div className="field" style={{ flex: 1 }}><label>Time</label><input type="time" value={time} onChange={(e) => setTime(e.target.value)} /></div>
+      </div>
+      <div className="field"><label>Duration</label><input value={duration} onChange={(e) => setDuration(e.target.value)} placeholder="e.g. 1h, 2h30" /></div>
+      <div className="field">
+        <label>Technician</label>
+        <select value={assignedTo} onChange={(e) => setAssignedTo(e.target.value)}>
+          <option value="">Unassigned</option>
+          {users.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+        </select>
+      </div>
+      <div className="field">
+        <label>Link to job / quote (optional)</label>
+        <select value={jobId} onChange={(e) => setJobId(e.target.value)}>
+          <option value="">— No linked job —</option>
+          {linkedJobs.map((j) => <option key={j.id} value={j.id}>{j.number} · {j.customer}</option>)}
+        </select>
+      </div>
+      <div className="field"><label>Notes</label><textarea rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Access instructions, parts to bring…" /></div>
+
+      <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
+        {editing && <button className="btn" style={{ color: TOKENS.red, borderColor: TOKENS.red }} onClick={() => onDelete(editing.id)}>Delete</button>}
+        <button className="btn btn-primary" style={{ flex: 1 }} disabled={!title.trim() || !date}
+          onClick={() => {
+            const payload = { title: title.trim(), date, time, duration, assignedTo: assignedTo || null, jobId: jobId || null, notes };
+            if (editing) onUpdate(editing.id, payload); else onCreate(payload);
+          }}>
+          {editing ? "Save changes" : "Book visit"}
+        </button>
+      </div>
+    </ModalShell>
+  );
+}
+
+function LogWorkModal({ modal, onClose, onSave }) {
+  const { job, date } = modal;
+  const [text, setText] = useState("");
+  return (
+    <ModalShell title="Log work completed" onClose={onClose}>
+      <div style={{ marginBottom: 10 }}>
+        <div className="ticket" style={{ fontSize: 12.5, fontWeight: 700, color: TOKENS.accent }}>{job.number}</div>
+        <div style={{ fontSize: 15, fontWeight: 700 }}>{job.customer}</div>
+        <div style={{ fontSize: 12.5, color: TOKENS.slateLight }}>{shortDate(date)}</div>
+      </div>
+      <div className="field">
+        <label>What was completed today</label>
+        <textarea rows={4} autoFocus value={text} onChange={(e) => setText(e.target.value)} placeholder="e.g. Replaced pump, tested pressure, awaiting part for valve" />
+      </div>
+      <button className="btn btn-primary" style={{ width: "100%" }} disabled={!text.trim()} onClick={() => onSave(job.id, text.trim(), date)}>Save to job</button>
+    </ModalShell>
+  );
+}
