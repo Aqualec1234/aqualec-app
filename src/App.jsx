@@ -226,3 +226,326 @@ export default function App() {
   const [selectedDay, setSelectedDay] = useState(toKey(new Date()));
   const [activeTechs, setActiveTechs] = useState(null);
   const [jobModal, setJobModal] = useState(null);
+  const [eventModal, setEventModal] = useState(null);
+  const [logWorkModal, setLogWorkModal] = useState(null);
+  const [openJobId, setOpenJobId] = useState(null);
+  const [openCustomerId, setOpenCustomerId] = useState(null);
+  const [jobFilter, setJobFilter] = useState("open");
+  const [jobSearch, setJobSearch] = useState("");
+  const [images, setImages] = useState({});
+  const [printJobId, setPrintJobId] = useState(null);
+
+  // ---- auth session ----
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => { setSession(data.session); setAuthLoading(false); });
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, s) => setSession(s));
+    return () => sub.subscription.unsubscribe();
+  }, []);
+
+  // ---- profile (per-person record linked to the login) ----
+  useEffect(() => {
+    if (!session) { setProfile(session === null ? null : undefined); return; }
+    (async () => {
+      const { data } = await supabase.from("profiles").select("*").eq("id", session.user.id).maybeSingle();
+      setProfile(data || null);
+    })();
+  }, [session]);
+
+  const fetchProfiles = async () => { const { data } = await supabase.from("profiles").select("*").order("name"); setProfiles(data || []); };
+  const fetchCustomers = async () => { const { data } = await supabase.from("customers").select("*").order("name"); setCustomers(data || []); };
+  const fetchJobs = async () => { const { data } = await supabase.from("jobs").select("*").order("created_at", { ascending: false }); setJobs((data || []).map(jobFromDb)); };
+  const fetchEvents = async () => { const { data } = await supabase.from("events").select("*").order("date"); setEvents((data || []).map(eventFromDb)); };
+  const loadAll = async () => { setDataLoading(true); await Promise.all([fetchProfiles(), fetchCustomers(), fetchJobs(), fetchEvents()]); setDataLoading(false); };
+
+  useEffect(() => {
+    if (!profile) return;
+    loadAll();
+    const onVisible = () => { if (document.visibilityState === "visible") loadAll(); };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", onVisible);
+    return () => { document.removeEventListener("visibilitychange", onVisible); window.removeEventListener("focus", onVisible); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [profile?.id]);
+
+  const userById = useMemo(() => Object.fromEntries(profiles.map((u) => [u.id, u])), [profiles]);
+  const jobById = useMemo(() => Object.fromEntries(jobs.map((j) => [j.id, j])), [jobs]);
+  const customerById = useMemo(() => Object.fromEntries(customers.map((c) => [c.id, c])), [customers]);
+
+  const visibleTechs = activeTechs ?? profiles.map((u) => u.id);
+  const eventsByDay = useMemo(() => {
+    const map = {};
+    for (const ev of events) {
+      if (!visibleTechs.includes(ev.assignedTo)) continue;
+      (map[ev.date] ||= []).push(ev);
+    }
+    for (const k in map) map[k].sort((a, b) => (a.time || "").localeCompare(b.time || ""));
+    return map;
+  }, [events, visibleTechs]);
+
+  const signOut = async () => { await supabase.auth.signOut(); setView("diary"); };
+
+  // ---- customers ----
+  const addCustomer = async (name, address, phone) => {
+    setSaveState("saving");
+    const { error } = await supabase.from("customers").insert({ name, address, phone });
+    if (error) { setSaveState("error"); return; }
+    await fetchCustomers();
+    setSaveState("saved");
+  };
+  const removeCustomer = async (id) => {
+    setSaveState("saving");
+    const { error } = await supabase.from("customers").delete().eq("id", id);
+    if (error) { setSaveState("error"); return; }
+    await fetchCustomers();
+    setSaveState("saved");
+  };
+
+  // ---- jobs ----
+  const createJob = async (form) => {
+    setSaveState("saving");
+    try {
+      const kind = form.kind;
+      const { data: n, error: seqErr } = await supabase.rpc("next_job_number", { p_kind: kind });
+      if (seqErr) throw seqErr;
+      const number = formatNumber(kind, new Date().getFullYear(), n);
+      let customerId = form.customerId;
+      if (!customerId) {
+        const { data: newCust, error: custErr } = await supabase.from("customers").insert({ name: form.customer, address: form.address, phone: form.phone }).select().single();
+        if (custErr) throw custErr;
+        customerId = newCust.id;
+      }
+      const { data: newJob, error: jobErr } = await supabase.from("jobs").insert({
+        number, kind, status: kind === "quote" ? "quote" : "confirmed",
+        job_type: form.jobType, priority: form.priority, customer_id: customerId,
+        customer: form.customer, address: form.address, phone: form.phone,
+        description: form.description, assigned_to: form.assignedTo || null,
+      }).select().single();
+      if (jobErr) throw jobErr;
+      await Promise.all([fetchJobs(), fetchCustomers()]);
+      setSaveState("saved");
+      return { jobId: newJob.id, number: newJob.number };
+    } catch (e) {
+      console.error(e);
+      setSaveState("error");
+      return {};
+    }
+  };
+
+  const updateJob = async (id, patch) => {
+    setSaveState("saving");
+    const { error } = await supabase.from("jobs").update(toDbJob(patch)).eq("id", id);
+    if (error) { console.error(error); setSaveState("error"); return; }
+    setJobs((js) => js.map((j) => (j.id === id ? { ...j, ...patch } : j)));
+    setSaveState("saved");
+  };
+
+  const addJobNote = async (id, text, date) => {
+    const job = jobsRef.current.find((j) => j.id === id);
+    if (!job) return;
+    const notes = [...job.notes, { id: uid(), ts: new Date().toISOString(), date: date || toKey(new Date()), author: profile?.name || "Unknown", text }];
+    await updateJob(id, { notes });
+  };
+  const addChecklistItem = async (jobId, text) => {
+    const job = jobsRef.current.find((j) => j.id === jobId);
+    if (!job) return;
+    await updateJob(jobId, { checklist: [...(job.checklist || []), { id: uid(), text, done: false }] });
+  };
+  const toggleChecklistItem = async (jobId, itemId) => {
+    const job = jobsRef.current.find((j) => j.id === jobId);
+    if (!job) return;
+    await updateJob(jobId, { checklist: job.checklist.map((c) => (c.id === itemId ? { ...c, done: !c.done } : c)) });
+  };
+  const removeChecklistItem = async (jobId, itemId) => {
+    const job = jobsRef.current.find((j) => j.id === jobId);
+    if (!job) return;
+    await updateJob(jobId, { checklist: job.checklist.filter((c) => c.id !== itemId) });
+  };
+  const updateJobSafety = async (jobId, patch) => {
+    const job = jobsRef.current.find((j) => j.id === jobId);
+    if (!job) return;
+    await updateJob(jobId, { safety: { ...(job.safety || {}), ...patch } });
+  };
+  const convertQuoteToJob = async (id) => {
+    const { data: n, error: seqErr } = await supabase.rpc("next_job_number", { p_kind: "job" });
+    if (seqErr) { console.error(seqErr); return; }
+    const number = formatNumber("job", new Date().getFullYear(), n);
+    await updateJob(id, { kind: "job", status: "confirmed", number });
+  };
+
+  // ---- events ----
+  const createEvent = async (form) => {
+    setSaveState("saving");
+    const { error } = await supabase.from("events").insert(toDbEvent(form));
+    if (error) { console.error(error); setSaveState("error"); return; }
+    await fetchEvents();
+    setSaveState("saved");
+  };
+  const updateEvent = async (id, patch) => {
+    setSaveState("saving");
+    const { error } = await supabase.from("events").update(toDbEvent(patch)).eq("id", id);
+    if (error) { console.error(error); setSaveState("error"); return; }
+    await fetchEvents();
+    setSaveState("saved");
+  };
+  const deleteEvent = async (id) => {
+    setSaveState("saving");
+    const { error } = await supabase.from("events").delete().eq("id", id);
+    if (error) { console.error(error); setSaveState("error"); return; }
+    await fetchEvents();
+    setSaveState("saved");
+  };
+
+  // ---- photos (Supabase Storage, private bucket "job-photos") ----
+  const loadImages = async (jobId, force = false) => {
+    if (images[jobId] && !force) return;
+    const { data: files, error } = await supabase.storage.from("job-photos").list(jobId, { limit: 200, sortBy: { column: "created_at", order: "asc" } });
+    if (error || !files) { setImages((m) => ({ ...m, [jobId]: [] })); return; }
+    const withUrls = await Promise.all(files.map(async (f) => {
+      const { data: signed } = await supabase.storage.from("job-photos").createSignedUrl(`${jobId}/${f.name}`, 3600);
+      return { id: f.name, url: signed?.signedUrl, ts: f.created_at };
+    }));
+    setImages((m) => ({ ...m, [jobId]: withUrls }));
+  };
+  const addImages = async (jobId, fileList) => {
+    for (const file of Array.from(fileList)) {
+      const blob = await compressImage(file);
+      const path = `${jobId}/${uid()}.jpg`;
+      await supabase.storage.from("job-photos").upload(path, blob, { contentType: "image/jpeg" });
+    }
+    await loadImages(jobId, true);
+  };
+  const removeImage = async (jobId, fileName) => {
+    await supabase.storage.from("job-photos").remove([`${jobId}/${fileName}`]);
+    await loadImages(jobId, true);
+  };
+
+  const openJobFromAnywhere = (id) => { setOpenJobId(id); setView("jobs"); };
+
+  // ---- render states ----
+  if (authLoading || session === undefined) {
+    return <CentredMessage>Loading Aqualec Job Tracker…</CentredMessage>;
+  }
+  if (!session) {
+    return <AuthGate />;
+  }
+  if (profile === undefined) {
+    return <CentredMessage>Loading your profile…</CentredMessage>;
+  }
+  if (profile === null) {
+    return <ProfileSetup session={session} onDone={(p) => setProfile(p)} onSignOut={signOut} />;
+  }
+  if (dataLoading) {
+    return <CentredMessage>Loading jobs, diary and customers…</CentredMessage>;
+  }
+
+  if (printJobId) {
+    const pJob = jobById[printJobId];
+    if (pJob) return <PrintableSafety job={pJob} customer={pJob.customerId ? customerById[pJob.customerId] : null} onClose={() => setPrintJobId(null)} />;
+    setPrintJobId(null);
+  }
+
+  return (
+    <div className="app-shell" style={{ fontFamily: "Inter, sans-serif", color: TOKENS.ink, background: TOKENS.paper, minHeight: "100vh", overflow: "hidden" }}>
+      <style>{GLOBAL_CSS}</style>
+
+      <Sidebar view={view} setView={setView} jobs={jobs} events={events} saveState={saveState} currentUser={profile} onSignOut={signOut}
+        onQuickJob={() => setJobModal({ mode: "new", kind: "job" })} />
+
+      <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
+        <MobileTopBar currentUser={profile} saveState={saveState} onSignOut={signOut} onQuickJob={() => setJobModal({ mode: "new", kind: "job" })} />
+
+        <div className="scrollbar main-content" style={{ flex: 1, overflowY: "auto" }}>
+          {view === "diary" && (
+            <DiaryView cursor={cursor} setCursor={setCursor} today={today} selectedDay={selectedDay} setSelectedDay={setSelectedDay}
+              eventsByDay={eventsByDay} users={profiles} activeTechs={activeTechs} setActiveTechs={setActiveTechs}
+              jobById={jobById} userById={userById}
+              onNewEvent={(date) => setEventModal({ date })}
+              onEditEvent={(ev) => setEventModal({ date: ev.date, event: ev })}
+              onOpenJob={openJobFromAnywhere}
+              onLogWork={(job, date) => setLogWorkModal({ job, date })} />
+          )}
+
+          {view === "jobs" && (
+            <JobsView jobs={jobs} users={profiles} userById={userById} customerById={customerById}
+              jobFilter={jobFilter} setJobFilter={setJobFilter} jobSearch={jobSearch} setJobSearch={setJobSearch}
+              openJobId={openJobId} setOpenJobId={setOpenJobId}
+              onNewJob={(kind) => setJobModal({ mode: "new", kind })}
+              onAddNote={addJobNote} onUpdateJob={updateJob} onConvert={convertQuoteToJob}
+              onBookVisit={(job) => setEventModal({ date: toKey(new Date()), event: null, presetJob: job })}
+              events={events} images={images} loadImages={loadImages} addImages={addImages} removeImage={removeImage}
+              checklistOps={{ addChecklistItem, toggleChecklistItem, removeChecklistItem }}
+              onOpenCustomer={(id) => { setOpenCustomerId(id); setView("customers"); }}
+              currentUser={profile} onUpdateSafety={updateJobSafety} onPrintSafety={(id) => setPrintJobId(id)} />
+          )}
+
+          {view === "customers" && (
+            <CustomersView customers={customers} jobs={jobs} openCustomerId={openCustomerId} setOpenCustomerId={setOpenCustomerId}
+              onAdd={addCustomer} onRemove={removeCustomer}
+              onOpenJob={openJobFromAnywhere}
+              onNewJobForCustomer={(customer) => setJobModal({ mode: "new", kind: "job", presetCustomer: customer })} />
+          )}
+
+          {view === "team" && <TeamView users={profiles} jobs={jobs} currentUserId={profile.id} />}
+        </div>
+
+        <MobileTabBar view={view} setView={setView} />
+      </div>
+
+      {jobModal && (
+        <JobModal modal={jobModal} users={profiles} customers={customers} currentUserId={profile.id} onClose={() => setJobModal(null)}
+          onCreate={async (form) => { const { jobId } = await createJob(form); setJobModal(null); if (jobId) { setOpenJobId(jobId); setView("jobs"); } }} />
+      )}
+
+      {eventModal && (
+        <EventModal modal={eventModal} users={profiles} jobs={jobs} onClose={() => setEventModal(null)}
+          onCreate={(form) => { createEvent(form); setEventModal(null); }}
+          onUpdate={(id, patch) => { updateEvent(id, patch); setEventModal(null); }}
+          onDelete={(id) => { deleteEvent(id); setEventModal(null); }} />
+      )}
+
+      {logWorkModal && (
+        <LogWorkModal modal={logWorkModal} onClose={() => setLogWorkModal(null)}
+          onSave={(jobId, text, date) => { addJobNote(jobId, text, date); setLogWorkModal(null); }} />
+      )}
+    </div>
+  );
+}
+
+function CentredMessage({ children }) {
+  return (
+    <div style={{ fontFamily: "Inter, sans-serif", minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", color: TOKENS.slate, background: TOKENS.paper }}>
+      <style>{FONT_IMPORT}</style>
+      {children}
+    </div>
+  );
+}
+
+/* ================= AUTH ================= */
+function AuthGate() {
+  const [mode, setMode] = useState("signin"); // signin | signup
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [checkEmail, setCheckEmail] = useState(false);
+
+  const submit = async () => {
+    setError(""); setBusy(true);
+    try {
+      if (mode === "signup") {
+        const { data, error: err } = await supabase.auth.signUp({ email, password });
+        if (err) throw err;
+        if (data.session) { /* auto-confirmed */ } else { setCheckEmail(true); }
+      } else {
+        const { error: err } = await supabase.auth.signInWithPassword({ email, password });
+        if (err) throw err;
+      }
+    } catch (e) {
+      setError(e.message || "Something went wrong.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div style={{ fontFamily: "Inter, sans-serif", minHeight: "100vh", background: TOKENS.ink, display: "flex", alignItems: "center", justifyContent: "center", padding: "24px 16px" }}>
