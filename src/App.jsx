@@ -554,3 +554,454 @@ function AuthGate() {
         if (data.session) { /* auto-confirmed */ } else { setCheckEmail(true); }
       } else {
         const { error: err } = await supabase.auth.signInWithPassword({ email, password });
+        if (err) throw err;
+      }
+    } catch (e) {
+      setError(e.message || "Something went wrong.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div style={{ fontFamily: "Inter, sans-serif", minHeight: "100vh", background: TOKENS.ink, display: "flex", alignItems: "center", justifyContent: "center", padding: "24px 16px" }}>
+      <style>{FONT_IMPORT}{`button{font-family:Inter,sans-serif;cursor:pointer;} input{font-family:Inter,sans-serif;border:1px solid #333;border-radius:6px;padding:11px;font-size:16px;width:100%;box-sizing:border-box;background:#1E2733;color:white;}`}</style>
+      <div style={{ width: "100%", maxWidth: 340, color: "white", textAlign: "center" }}>
+        <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontWeight: 800, fontSize: 30 }}>AQUALEC</div>
+        <div style={{ color: "#9AA3AC", fontSize: 13, marginBottom: 26, textTransform: "uppercase", letterSpacing: ".05em" }}>Team sign in</div>
+
+        {checkEmail ? (
+          <div style={{ fontSize: 13.5, color: "#AEB6BD", lineHeight: 1.6 }}>
+            Check your email to confirm your account, then come back and sign in.
+            <button onClick={() => { setCheckEmail(false); setMode("signin"); }} style={{ display: "block", marginTop: 16, width: "100%", background: TOKENS.accent, border: "none", color: "white", borderRadius: 8, padding: "12px 0", fontWeight: 700 }}>Back to sign in</button>
+          </div>
+        ) : (
+          <div style={{ textAlign: "left" }}>
+            <div style={{ marginBottom: 10 }}><input type="email" placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} /></div>
+            <div style={{ marginBottom: 10 }}><input type="password" placeholder="Password" value={password} onChange={(e) => setPassword(e.target.value)} /></div>
+            {error && <div style={{ color: "#E88", fontSize: 12.5, marginBottom: 10 }}>{error}</div>}
+            <button disabled={busy || !email || !password} onClick={submit} style={{ width: "100%", background: TOKENS.accent, border: "none", color: "white", borderRadius: 8, padding: "12px 0", fontWeight: 700, opacity: busy ? 0.6 : 1 }}>
+              {busy ? "…" : mode === "signup" ? "Create account" : "Sign in"}
+            </button>
+            <button onClick={() => { setMode(mode === "signup" ? "signin" : "signup"); setError(""); }} style={{ marginTop: 12, background: "none", border: "none", color: "#9AA3AC", fontSize: 12.5, width: "100%" }}>
+              {mode === "signup" ? "Already have an account? Sign in" : "New team member? Create an account"}
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ProfileSetup({ session, onDone, onSignOut }) {
+  const [name, setName] = useState("");
+  const [trade, setTrade] = useState("");
+  const [colour, setColour] = useState(TECH_COLOURS[0]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const submit = async () => {
+    if (!name.trim()) return;
+    setBusy(true); setError("");
+    const { data, error: err } = await supabase.from("profiles").insert({ id: session.user.id, name: name.trim(), trade: trade.trim(), colour }).select().single();
+    setBusy(false);
+    if (err) { setError(err.message); return; }
+    onDone(data);
+  };
+
+  return (
+    <div style={{ fontFamily: "Inter, sans-serif", minHeight: "100vh", background: TOKENS.ink, display: "flex", alignItems: "center", justifyContent: "center", padding: "24px 16px" }}>
+      <style>{FONT_IMPORT}{`button{font-family:Inter,sans-serif;cursor:pointer;} input{font-family:Inter,sans-serif;border:1px solid #333;border-radius:6px;padding:11px;font-size:16px;width:100%;box-sizing:border-box;background:#1E2733;color:white;}`}</style>
+      <div style={{ width: "100%", maxWidth: 340, color: "white" }}>
+        <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontWeight: 800, fontSize: 26, textAlign: "center" }}>Welcome</div>
+        <div style={{ color: "#9AA3AC", fontSize: 13, marginBottom: 22, textAlign: "center" }}>Set up your profile — {session.user.email}</div>
+        <div style={{ marginBottom: 10 }}><input placeholder="Full name" value={name} onChange={(e) => setName(e.target.value)} /></div>
+        <div style={{ marginBottom: 12 }}><input placeholder="Trade / role" value={trade} onChange={(e) => setTrade(e.target.value)} /></div>
+        <div style={{ display: "flex", gap: 6, marginBottom: 18, flexWrap: "wrap" }}>
+          {TECH_COLOURS.map((c) => (
+            <button key={c} onClick={() => setColour(c)} style={{ width: 26, height: 26, borderRadius: "50%", background: c, border: colour === c ? "2px solid white" : "2px solid transparent" }} />
+          ))}
+        </div>
+        {error && <div style={{ color: "#E88", fontSize: 12.5, marginBottom: 10 }}>{error}</div>}
+        <button disabled={busy || !name.trim()} onClick={submit} style={{ width: "100%", background: TOKENS.accent, border: "none", color: "white", borderRadius: 8, padding: "12px 0", fontWeight: 700, opacity: busy ? 0.6 : 1 }}>{busy ? "…" : "Start using the app"}</button>
+        <button onClick={onSignOut} style={{ marginTop: 12, background: "none", border: "none", color: "#9AA3AC", fontSize: 12.5, width: "100%" }}>Sign out</button>
+      </div>
+    </div>
+  );
+}
+
+/* ================= DESKTOP SIDEBAR ================= */
+function Sidebar({ view, setView, jobs, events, saveState, currentUser, onSignOut, onQuickJob }) {
+  const openQuotes = jobs.filter((j) => j.kind === "quote" && j.status === "quote").length;
+  const inProgress = jobs.filter((j) => j.status === "in_progress").length;
+  const readyToInvoice = jobs.filter((j) => j.status === "complete").length;
+  const todayKey = toKey(new Date());
+  const todayCount = events.filter((e) => e.date === todayKey).length;
+
+  const items = [
+    { id: "diary", label: "Diary", sub: `${todayCount} today` },
+    { id: "jobs", label: "Jobs & Quotes", sub: `${inProgress} active` },
+    { id: "customers", label: "Customers", sub: null },
+    { id: "team", label: "Team", sub: null },
+  ];
+
+  return (
+    <div className="sidebar-desktop" style={{ width: 210, background: TOKENS.ink, color: "#EDEFEA", flexDirection: "column", padding: "20px 0", flexShrink: 0 }}>
+      <div style={{ padding: "0 20px 18px", borderBottom: "1px solid rgba(255,255,255,0.1)", marginBottom: 10 }}>
+        <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontWeight: 800, fontSize: 22, letterSpacing: ".01em", lineHeight: 1 }}>AQUALEC</div>
+        <div style={{ fontSize: 11, color: "#9AA3AC", marginTop: 3, letterSpacing: ".04em", textTransform: "uppercase" }}>Job Tracker</div>
+      </div>
+
+      <div style={{ padding: "0 20px 14px" }}>
+        <button onClick={onQuickJob} className="btn-primary" style={{ width: "100%", border: "none", borderRadius: 8, padding: "10px 0", fontWeight: 700, fontSize: 13, display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+          <Plus size={15} /> Quick job number
+        </button>
+      </div>
+
+      <div style={{ flex: 1 }}>
+        {items.map((it) => (
+          <button key={it.id} className="btn-ghost" onClick={() => setView(it.id)}
+            style={{ display: "block", width: "100%", textAlign: "left", padding: "10px 20px", color: view === it.id ? "white" : "#AEB6BD", background: view === it.id ? "rgba(217,72,15,0.18)" : "transparent", borderLeft: view === it.id ? `3px solid ${TOKENS.accent}` : "3px solid transparent", fontWeight: 600, fontSize: 14 }}>
+            {it.label}
+            {it.sub && <div style={{ fontSize: 11, color: "#8A93A0", fontWeight: 500, marginTop: 1 }}>{it.sub}</div>}
+          </button>
+        ))}
+        {openQuotes > 0 && <div style={{ margin: "14px 20px 0", padding: "8px 10px", background: "rgba(200,135,26,0.15)", borderRadius: 6, fontSize: 11.5, color: "#E3B565" }}>{openQuotes} quote{openQuotes !== 1 ? "s" : ""} awaiting a decision</div>}
+        {readyToInvoice > 0 && <div style={{ margin: "8px 20px 0", padding: "8px 10px", background: "rgba(47,125,69,0.18)", borderRadius: 6, fontSize: 11.5, color: "#6FCB8A" }}>{readyToInvoice} job{readyToInvoice !== 1 ? "s" : ""} ready to invoice</div>}
+      </div>
+
+      <div style={{ padding: "12px 20px 0", borderTop: "1px solid rgba(255,255,255,0.08)" }}>
+        {currentUser && (
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+            <span style={{ width: 9, height: 9, borderRadius: "50%", background: currentUser.colour, display: "inline-block" }} />
+            <div style={{ fontSize: 12.5, fontWeight: 600 }}>{currentUser.name}</div>
+          </div>
+        )}
+        <button className="btn-ghost" onClick={onSignOut} style={{ fontSize: 11.5, padding: 0, color: "#8A93A0" }}>Sign out</button>
+        <div style={{ fontSize: 10.5, color: "#6E7680", marginTop: 8 }}>{saveState === "saving" ? "Syncing…" : saveState === "error" ? "Sync failed" : "Synced · shared with your team"}</div>
+      </div>
+    </div>
+  );
+}
+
+/* ================= MOBILE CHROME ================= */
+function MobileTopBar({ currentUser, saveState, onSignOut, onQuickJob }) {
+  return (
+    <div className="mobile-topbar">
+      <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+        <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontWeight: 800, fontSize: 18, flexShrink: 0 }}>AQUALEC</div>
+        {currentUser && (
+          <button onClick={onSignOut} style={{ display: "flex", alignItems: "center", gap: 5, background: "rgba(255,255,255,0.08)", border: "none", borderRadius: 20, padding: "4px 9px 4px 6px", color: "white", fontSize: 11.5, fontWeight: 600, overflow: "hidden" }}>
+            <span style={{ width: 7, height: 7, borderRadius: "50%", background: currentUser.colour, display: "inline-block", flexShrink: 0 }} />
+            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{currentUser.name}</span>
+          </button>
+        )}
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <span style={{ width: 6, height: 6, borderRadius: "50%", background: saveState === "error" ? TOKENS.red : TOKENS.accent2, flexShrink: 0 }} title={saveState === "saving" ? "Syncing…" : "Synced"} />
+        <button onClick={onQuickJob} style={{ display: "flex", alignItems: "center", gap: 5, background: TOKENS.accent, border: "none", color: "white", borderRadius: 20, padding: "7px 12px", fontWeight: 700, fontSize: 12.5 }}>
+          <Plus size={14} /> Job
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function MobileTabBar({ view, setView }) {
+  return (
+    <div className="mobile-tabbar">
+      {NAV_ITEMS.map((it) => {
+        const active = view === it.id;
+        return (
+          <button key={it.id} onClick={() => setView(it.id)} style={{ flex: 1, background: "none", border: "none", display: "flex", flexDirection: "column", alignItems: "center", gap: 3, padding: "9px 4px 8px", color: active ? "white" : "#8A93A0" }}>
+            <it.Icon size={19} color={active ? TOKENS.accent : "#8A93A0"} strokeWidth={active ? 2.3 : 2} />
+            <span style={{ fontSize: 10.5, fontWeight: 600 }}>{it.label}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/* ================= DIARY ================= */
+function DiaryView({ cursor, setCursor, today, selectedDay, setSelectedDay, eventsByDay, users, activeTechs, setActiveTechs, jobById, userById, onNewEvent, onEditEvent, onOpenJob, onLogWork }) {
+  const year = cursor.getFullYear();
+  const month = cursor.getMonth();
+  const first = new Date(year, month, 1);
+  const startOffset = (first.getDay() + 6) % 7;
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const cells = [];
+  for (let i = 0; i < startOffset; i++) cells.push(null);
+  for (let d = 1; d <= daysInMonth; d++) cells.push(new Date(year, month, d));
+  while (cells.length % 7 !== 0) cells.push(null);
+
+  const toggleTech = (id) => {
+    setActiveTechs((cur) => {
+      const base = cur ?? users.map((u) => u.id);
+      if (base.includes(id)) { const next = base.filter((x) => x !== id); return next.length ? next : []; }
+      return [...base, id];
+    });
+  };
+
+  const dayEvents = eventsByDay[selectedDay] || [];
+  const selDateObj = fromKey(selectedDay);
+
+  return (
+    <div className="diary-layout">
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16, flexWrap: "wrap", gap: 8 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <button className="btn" onClick={() => setCursor(new Date(year, month - 1, 1))}><ChevronLeft size={15} /></button>
+            <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontWeight: 700, fontSize: 22, minWidth: 150 }}>{monthLabel(cursor)}</div>
+            <button className="btn" onClick={() => setCursor(new Date(year, month + 1, 1))}><ChevronRight size={15} /></button>
+            <button className="btn hide-mobile" onClick={() => { setCursor(new Date()); setSelectedDay(toKey(new Date())); }}>Today</button>
+          </div>
+          <button className="btn btn-primary hide-mobile" onClick={() => onNewEvent(selectedDay)}>+ Book visit</button>
+        </div>
+
+        <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
+          {users.map((u) => {
+            const on = (activeTechs ?? users.map((x) => x.id)).includes(u.id);
+            return (
+              <button key={u.id} onClick={() => toggleTech(u.id)}
+                style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 10px", borderRadius: 20, border: `1px solid ${on ? u.colour : TOKENS.line}`, background: on ? `${u.colour}1A` : "white", fontSize: 12.5, fontWeight: 600, color: on ? TOKENS.ink : TOKENS.slateLight }}>
+                <span style={{ width: 8, height: 8, borderRadius: "50%", background: u.colour, display: "inline-block" }} />
+                {u.name}
+              </button>
+            );
+          })}
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 5, fontSize: 10.5, color: TOKENS.slateLight, fontWeight: 700, textTransform: "uppercase", marginBottom: 6 }}>
+          {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((d) => <div key={d} style={{ textAlign: "center" }}>{d}</div>)}
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 5 }}>
+          {cells.map((d, i) => {
+            if (!d) return <div key={i} className="cal-cell" />;
+            const key = toKey(d);
+            const isToday = toKey(today) === key;
+            const isSel = key === selectedDay;
+            const evs = eventsByDay[key] || [];
+            return (
+              <button key={i} className="cal-cell" onClick={() => setSelectedDay(key)}
+                style={{ textAlign: "left", padding: 6, borderRadius: 8, cursor: "pointer", background: isSel ? "white" : "rgba(255,255,255,0.55)", border: `1.5px solid ${isSel ? TOKENS.accent : isToday ? TOKENS.accent2 : "transparent"}`, display: "flex", flexDirection: "column", gap: 2, overflow: "hidden" }}>
+                <div style={{ fontSize: 12, fontWeight: isToday ? 800 : 600, color: isToday ? TOKENS.accent2 : TOKENS.ink }}>{d.getDate()}</div>
+                {evs.length > 0 && (
+                  <div className="hide-mobile" style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                    {evs.slice(0, 3).map((ev) => {
+                      const u = userById[ev.assignedTo];
+                      return (
+                        <div key={ev.id} style={{ fontSize: 10, background: `${u?.colour || TOKENS.slate}22`, color: TOKENS.ink, borderRadius: 4, padding: "2px 4px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", borderLeft: `2.5px solid ${u?.colour || TOKENS.slate}` }}>
+                          {ev.time ? `${ev.time} ` : ""}{ev.title}
+                        </div>
+                      );
+                    })}
+                    {evs.length > 3 && <div style={{ fontSize: 9.5, color: TOKENS.slateLight }}>+{evs.length - 3} more</div>}
+                  </div>
+                )}
+                {evs.length > 0 && (
+                  <div style={{ display: "flex", gap: 2, flexWrap: "wrap" }}>
+                    {evs.slice(0, 4).map((ev) => <span key={ev.id} style={{ width: 6, height: 6, borderRadius: "50%", background: (userById[ev.assignedTo]?.colour) || TOKENS.slate, display: "inline-block" }} />)}
+                  </div>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="diary-panel">
+        <div style={{ background: "white", border: `1px solid ${TOKENS.line}`, borderRadius: 10, padding: 16 }}>
+          <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontWeight: 700, fontSize: 19, marginBottom: 2 }}>{dayLabel(selDateObj)}</div>
+          <div style={{ fontSize: 12, color: TOKENS.slateLight, marginBottom: 14 }}>{dayEvents.length} booking{dayEvents.length !== 1 ? "s" : ""}</div>
+          {dayEvents.length === 0 && <div style={{ fontSize: 13, color: TOKENS.slateLight, padding: "14px 0" }}>Nothing booked. Add a visit, callback or site survey.</div>}
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {dayEvents.map((ev) => {
+              const u = userById[ev.assignedTo];
+              const job = ev.jobId ? jobById[ev.jobId] : null;
+              return (
+                <div key={ev.id} style={{ border: `1px solid ${TOKENS.line}`, borderLeft: `3px solid ${u?.colour || TOKENS.slate}`, borderRadius: 7, padding: "8px 10px" }}>
+                  <div onClick={() => onEditEvent(ev)} style={{ cursor: "pointer" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, fontWeight: 700 }}>
+                      <span>{ev.title}</span>
+                      <span className="ticket" style={{ fontSize: 11.5, color: TOKENS.slate }}>{ev.time || "—"}</span>
+                    </div>
+                    <div style={{ fontSize: 11.5, color: TOKENS.slate, marginTop: 2 }}>{u?.name || "Unassigned"}{ev.duration ? ` · ${ev.duration}` : ""}</div>
+                  </div>
+                  {job && (
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 6, gap: 6, flexWrap: "wrap" }}>
+                      <span className="ticket" onClick={() => onOpenJob(job.id)} style={{ cursor: "pointer", fontSize: 10.5, color: TOKENS.accent, fontWeight: 700 }}>{job.number} · {job.customer}</span>
+                      <button className="btn" onClick={() => onLogWork(job, ev.date)} style={{ fontSize: 10.5, padding: "4px 9px", minHeight: "auto" }}>Log work</button>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+          <button className="btn btn-primary" style={{ width: "100%", marginTop: 14 }} onClick={() => onNewEvent(selectedDay)}>+ Book on this day</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ================= JOBS ================= */
+function JobsView({ jobs, users, userById, customerById, jobFilter, setJobFilter, jobSearch, setJobSearch, openJobId, setOpenJobId, onNewJob, onAddNote, onUpdateJob, onConvert, onBookVisit, events, images, loadImages, addImages, removeImage, checklistOps, onOpenCustomer, currentUser, onUpdateSafety, onPrintSafety, onDeleteJob }) {
+  const filtered = jobs.filter((j) => {
+    if (jobFilter === "open" && ["complete", "invoiced"].includes(j.status)) return false;
+    if (jobFilter === "quote" && j.kind !== "quote") return false;
+    if (jobFilter === "invoice" && j.status !== "complete") return false;
+    if (jobFilter === "complete" && !["complete", "invoiced"].includes(j.status)) return false;
+    if (jobSearch) {
+      const q = jobSearch.toLowerCase();
+      if (!(j.customer.toLowerCase().includes(q) || j.number.toLowerCase().includes(q) || (j.address || "").toLowerCase().includes(q))) return false;
+    }
+    return true;
+  });
+
+  const openJob = jobs.find((j) => j.id === openJobId);
+
+  if (openJob) {
+    return (
+      <JobDetail job={openJob} users={users} userById={userById} customer={openJob.customerId ? customerById[openJob.customerId] : null}
+        events={events.filter((e) => e.jobId === openJob.id)} onBack={() => setOpenJobId(null)}
+        onAddNote={onAddNote} onUpdateJob={onUpdateJob} onConvert={onConvert} onBookVisit={onBookVisit}
+        images={images[openJob.id]} loadImages={loadImages} addImages={addImages} removeImage={removeImage}
+        checklistOps={checklistOps} onOpenCustomer={onOpenCustomer}
+        currentUser={currentUser} onUpdateSafety={onUpdateSafety} onPrintSafety={onPrintSafety} onDeleteJob={onDeleteJob} />
+    );
+  }
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 8 }}>
+        <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontWeight: 700, fontSize: 22 }}>Jobs &amp; Quotes</div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button className="btn" onClick={() => onNewJob("quote")}>+ Quote</button>
+          <button className="btn btn-primary" onClick={() => onNewJob("job")}>+ Job</button>
+        </div>
+      </div>
+
+      <div style={{ display: "flex", gap: 8, marginBottom: 14, alignItems: "center", flexWrap: "wrap" }}>
+        {[["open", "Open"], ["quote", "Quotes"], ["invoice", "Ready to invoice"], ["complete", "Completed"], ["all", "All"]].map(([id, label]) => (
+          <button key={id} className="btn" onClick={() => setJobFilter(id)} style={{ background: jobFilter === id ? TOKENS.ink : "white", color: jobFilter === id ? "white" : TOKENS.ink, borderColor: jobFilter === id ? TOKENS.ink : TOKENS.line, fontSize: 12.5 }}>{label}</button>
+        ))}
+        <input placeholder="Search customer, address or job no." value={jobSearch} onChange={(e) => setJobSearch(e.target.value)} style={{ maxWidth: 260 }} />
+      </div>
+
+      {filtered.length === 0 && <div style={{ color: TOKENS.slateLight, fontSize: 13.5, padding: "30px 4px" }}>No jobs match here yet. Raise a quote or a job to get started.</div>}
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {filtered.map((j) => {
+          const u = j.assignedTo ? userById[j.assignedTo] : null;
+          const meta = STATUS_META[j.status];
+          const done = (j.checklist || []).filter((c) => c.done).length;
+          const total = (j.checklist || []).length;
+          return (
+            <div key={j.id} className="job-row" onClick={() => setOpenJobId(j.id)} style={{ background: "white", border: `1px solid ${TOKENS.line}`, borderRadius: 9, padding: "12px 14px", cursor: "pointer" }}>
+              <div className="ticket" style={{ fontWeight: 700, fontSize: 12.5, color: TOKENS.ink, background: TOKENS.paper, border: `1px dashed ${TOKENS.line}`, borderRadius: 6, padding: "4px 8px", textAlign: "center" }}>{j.number}</div>
+              <div className="job-row-main">
+                <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                  {j.priority === "urgent" && <span style={{ width: 7, height: 7, borderRadius: "50%", background: TOKENS.red, display: "inline-block" }} />}
+                  <div style={{ fontWeight: 700, fontSize: 14 }}>{j.customer}</div>
+                  {j.jobType && <span style={{ fontSize: 10.5, color: TOKENS.slateLight, border: `1px solid ${TOKENS.line}`, borderRadius: 4, padding: "1px 5px" }}>{JOB_TYPES[j.jobType]}</span>}
+                </div>
+                <div style={{ fontSize: 12, color: TOKENS.slate, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{j.address || j.description}</div>
+              </div>
+              {total > 0 && <div style={{ fontSize: 11, color: TOKENS.slateLight }}>{done}/{total} ✓</div>}
+              <div className="hide-mobile" style={{ fontSize: 11.5, color: TOKENS.slate, minWidth: 100 }}>{u ? u.name : "Unassigned"}</div>
+              <span style={{ fontSize: 11, fontWeight: 700, color: meta.colour, background: `${meta.colour}18`, borderRadius: 20, padding: "4px 10px", whiteSpace: "nowrap" }}>{meta.label}</span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function ProgressStepper({ status, onSet }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", marginBottom: 16 }}>
+      {STATUS_ORDER.map((s, i) => {
+        const active = STATUS_ORDER.indexOf(status) >= i;
+        const isCurrent = status === s;
+        return (
+          <React.Fragment key={s}>
+            {i > 0 && <div style={{ flex: 1, height: 2, background: active ? TOKENS.accent2 : TOKENS.line }} />}
+            <button onClick={() => onSet(s)} title={STATUS_META[s].label}
+              style={{ width: 28, height: 28, borderRadius: "50%", border: `2px solid ${active ? TOKENS.accent2 : TOKENS.line}`, background: active ? TOKENS.accent2 : "white", color: active ? "white" : TOKENS.slateLight, fontSize: 11, fontWeight: 700, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", boxShadow: isCurrent ? `0 0 0 3px ${TOKENS.accent2}33` : "none" }}>
+              {i + 1}
+            </button>
+          </React.Fragment>
+        );
+      })}
+    </div>
+  );
+}
+
+function JobDetail({ job, users, userById, customer, events, onBack, onAddNote, onUpdateJob, onConvert, onBookVisit, images, loadImages, addImages, removeImage, checklistOps, onOpenCustomer, currentUser, onUpdateSafety, onPrintSafety, onDeleteJob }) {
+  const [note, setNote] = useState("");
+  const [noteDate, setNoteDate] = useState(toKey(new Date()));
+  const [checklistText, setChecklistText] = useState("");
+  const [uploading, setUploading] = useState(false);
+  const fileRef = useRef(null);
+  const meta = STATUS_META[job.status];
+  const prio = PRIORITY_META[job.priority] || PRIORITY_META.normal;
+  const safety = job.safety || { signedOff: false, signedBy: null, signedAt: null, siteNotes: "" };
+
+  useEffect(() => { loadImages(job.id); }, [job.id]);
+
+  const checklist = job.checklist || [];
+  const doneCount = checklist.filter((c) => c.done).length;
+  const allDone = checklist.length > 0 && doneCount === checklist.length;
+
+  const handleFiles = async (files) => {
+    if (!files || !files.length) return;
+    setUploading(true);
+    await addImages(job.id, files);
+    setUploading(false);
+  };
+
+  return (
+    <div style={{ maxWidth: 680 }}>
+      <button className="btn-ghost" onClick={onBack} style={{ marginBottom: 12, fontWeight: 700, display: "flex", alignItems: "center", gap: 6 }}><ArrowLeft size={15} /> All jobs</button>
+      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 10, gap: 10, flexWrap: "wrap" }}>
+        <div>
+          <div className="ticket" style={{ fontSize: 13, fontWeight: 700, color: TOKENS.accent }}>{job.number}</div>
+          <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontWeight: 700, fontSize: 24 }}>{job.customer}</div>
+          <div style={{ display: "flex", gap: 6, marginTop: 4, alignItems: "center", flexWrap: "wrap" }}>
+            {job.jobType && <span style={{ fontSize: 11, color: TOKENS.slate, border: `1px solid ${TOKENS.line}`, borderRadius: 4, padding: "1px 6px" }}>{JOB_TYPES[job.jobType]}</span>}
+            <span style={{ fontSize: 11, fontWeight: 700, color: prio.colour }}>{prio.label} priority</span>
+            {customer && <button className="btn-ghost" onClick={() => onOpenCustomer(customer.id)} style={{ fontSize: 11, fontWeight: 700, color: TOKENS.accent2, padding: 0 }}>View customer →</button>}
+          </div>
+        </div>
+        <span style={{ fontSize: 12, fontWeight: 700, color: meta.colour, background: `${meta.colour}18`, borderRadius: 20, padding: "5px 12px", whiteSpace: "nowrap" }}>{meta.label}</span>
+      </div>
+
+      <ProgressStepper status={job.status} onSet={(s) => onUpdateJob(job.id, { status: s })} />
+
+      <div style={{ fontSize: 13.5, color: TOKENS.slate, marginBottom: 4 }}>{job.address}</div>
+      <div style={{ fontSize: 13.5, color: TOKENS.slate, marginBottom: 14 }}>{job.phone}</div>
+      <div style={{ background: "white", border: `1px solid ${TOKENS.line}`, borderRadius: 9, padding: 14, marginBottom: 14 }}>
+        <div style={{ fontSize: 13.5 }}>{job.description || "No description given."}</div>
+      </div>
+
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 22 }}>
+        <select value={job.assignedTo || ""} onChange={(e) => onUpdateJob(job.id, { assignedTo: e.target.value || null })} style={{ width: "auto" }}>
+          <option value="">Unassigned</option>
+          {users.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+        </select>
+        {job.kind === "quote" && <button className="btn btn-primary" onClick={() => onConvert(job.id)}>Convert to job</button>}
+        <button className="btn" onClick={() => onBookVisit(job)}>+ Book visit</button>
+        {job.status !== "complete" && job.status !== "invoiced" && <button className="btn" style={{ borderColor: TOKENS.green, color: TOKENS.green }} onClick={() => onUpdateJob(job.id, { status: "complete" })}>Ready to invoice</button>}
+        {job.status === "complete" && <button className="btn btn-primary" onClick={() => onUpdateJob(job.id, { status: "invoiced" })}>Mark invoiced</button>}
+      </div>
+
+      <div style={{ marginBottom: 22 }}>
+        <div style={{ fontSize: 11.5, fontWeight: 700, color: TOKENS.slateLight, textTransform: "uppercase", marginBottom: 6 }}>Progress checklist {checklist.length > 0 && `(${doneCount}/${checklist.length})`}</div>
+        {allDone && <div style={{ fontSize: 12.5, color: TOKENS.green, marginBottom: 8, fontWeight: 600 }}>All tasks complete — ready to invoice.</div>}
+        <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 8 }}>
+          {checklist.map((c) => (
+            <label key={c.id} style={{ display: "flex", alignItems: "center", gap: 8, background: "white", border: `1px solid ${TOKENS.line}`, borderRadius: 7, padding: "9px 10px", fontSize: 13, cursor: "pointer" }}>
+              <input type="checkbox" checked={c.done} onChange={() => checklistOps.toggleChecklistItem(job.id, c.id)} style={{ width: 18, height: 18, flexShrink: 0 }} />
+              <span style={{ flex: 1, textDecoration: c.done ? "line-through" : "none", color: c.done ? TOKENS.slateLight : TOKENS.ink }}>{c.text}</span>
