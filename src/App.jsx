@@ -1005,3 +1005,474 @@ function JobDetail({ job, users, userById, customer, events, onBack, onAddNote, 
             <label key={c.id} style={{ display: "flex", alignItems: "center", gap: 8, background: "white", border: `1px solid ${TOKENS.line}`, borderRadius: 7, padding: "9px 10px", fontSize: 13, cursor: "pointer" }}>
               <input type="checkbox" checked={c.done} onChange={() => checklistOps.toggleChecklistItem(job.id, c.id)} style={{ width: 18, height: 18, flexShrink: 0 }} />
               <span style={{ flex: 1, textDecoration: c.done ? "line-through" : "none", color: c.done ? TOKENS.slateLight : TOKENS.ink }}>{c.text}</span>
+              <button className="btn-ghost" onClick={(e) => { e.preventDefault(); checklistOps.removeChecklistItem(job.id, c.id); }} style={{ fontSize: 15, padding: "0 4px" }}><X size={15} /></button>
+            </label>
+          ))}
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <input placeholder="e.g. Order parts, Test system, Sign-off" value={checklistText} onChange={(e) => setChecklistText(e.target.value)} />
+          <button className="btn" onClick={() => { if (checklistText.trim()) { checklistOps.addChecklistItem(job.id, checklistText.trim()); setChecklistText(""); } }}>Add</button>
+        </div>
+      </div>
+
+      <SafetyAccordion job={job} safety={safety} currentUser={currentUser} onUpdateSafety={onUpdateSafety} onPrintSafety={onPrintSafety} />
+
+      <div style={{ marginBottom: 22 }}>
+        <div style={{ fontSize: 11.5, fontWeight: 700, color: TOKENS.slateLight, textTransform: "uppercase", marginBottom: 6 }}>Photos</div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(88px, 1fr))", gap: 8, marginBottom: 10 }}>
+          {(images || []).map((im) => (
+            <div key={im.id} style={{ position: "relative", borderRadius: 7, overflow: "hidden", border: `1px solid ${TOKENS.line}`, aspectRatio: "1", background: "white" }}>
+              <img src={im.url} alt="" style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
+              <button onClick={() => removeImage(job.id, im.id)} style={{ position: "absolute", top: 3, right: 3, width: 22, height: 22, borderRadius: "50%", border: "none", background: "rgba(20,20,20,0.65)", color: "white", display: "flex", alignItems: "center", justifyContent: "center" }}><X size={12} /></button>
+            </div>
+          ))}
+          <button onClick={() => fileRef.current?.click()} style={{ aspectRatio: "1", borderRadius: 7, border: `1.5px dashed ${TOKENS.line}`, background: "white", color: TOKENS.slateLight, fontSize: 11.5, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 4 }}>
+            <Camera size={19} />
+            {uploading ? "Uploading" : "Add photo"}
+          </button>
+        </div>
+        <input ref={fileRef} type="file" accept="image/*" multiple capture="environment" style={{ display: "none" }} onChange={(e) => { handleFiles(e.target.files); e.target.value = ""; }} />
+      </div>
+
+      {events.length > 0 && (
+        <div style={{ marginBottom: 18 }}>
+          <div style={{ fontSize: 11.5, fontWeight: 700, color: TOKENS.slateLight, textTransform: "uppercase", marginBottom: 6 }}>Booked visits</div>
+          {events.map((ev) => (
+            <div key={ev.id} style={{ fontSize: 12.5, color: TOKENS.slate, padding: "4px 0" }}>{shortDate(ev.date)} — {ev.title} ({userById[ev.assignedTo]?.name || "Unassigned"})</div>
+          ))}
+        </div>
+      )}
+
+      <div style={{ fontSize: 11.5, fontWeight: 700, color: TOKENS.slateLight, textTransform: "uppercase", marginBottom: 6 }}>Daily work notes</div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 10 }}>
+        {job.notes.length === 0 && <div style={{ fontSize: 13, color: TOKENS.slateLight }}>No notes yet — log what's completed each day here.</div>}
+        {job.notes.slice().reverse().map((n) => (
+          <div key={n.id} style={{ background: "white", border: `1px solid ${TOKENS.line}`, borderRadius: 7, padding: "8px 10px" }}>
+            <div style={{ fontSize: 10.5, color: TOKENS.slateLight, marginBottom: 3, fontWeight: 600 }}>{n.date ? shortDate(n.date) : new Date(n.ts).toLocaleDateString("en-GB")}{n.author ? ` · ${n.author}` : ""}</div>
+            <div style={{ fontSize: 13 }}>{n.text}</div>
+          </div>
+        ))}
+      </div>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+        <input type="date" value={noteDate} onChange={(e) => setNoteDate(e.target.value)} style={{ maxWidth: 150 }} />
+        <input placeholder="What was completed…" value={note} onChange={(e) => setNote(e.target.value)} style={{ flex: 1, minWidth: 160 }} />
+        <button className="btn btn-primary" onClick={() => { if (note.trim()) { onAddNote(job.id, note.trim(), noteDate); setNote(""); } }}>Add</button>
+      </div>
+
+      <div style={{ marginTop: 34, paddingTop: 16, borderTop: `1px solid ${TOKENS.line}` }}>
+        <button
+          className="btn"
+          style={{ color: TOKENS.red, borderColor: TOKENS.red }}
+          onClick={() => {
+            if (window.confirm(`Delete job ${job.number} for ${job.customer}? This removes the job, its notes, checklist and photos permanently — it can't be undone.`)) {
+              onDeleteJob(job.id);
+            }
+          }}
+        >
+          Delete this job
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ================= HEALTH & SAFETY ================= */
+function SafetyAccordion({ job, safety, currentUser, onUpdateSafety, onPrintSafety }) {
+  const [open, setOpen] = useState(false);
+  const [siteNotes, setSiteNotes] = useState(safety.siteNotes || "");
+
+  return (
+    <div style={{ marginBottom: 22, background: "white", border: `1px solid ${TOKENS.line}`, borderRadius: 9, overflow: "hidden" }}>
+      <button onClick={() => setOpen((o) => !o)} style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 14px", background: "none", border: "none", textAlign: "left" }}>
+        <span style={{ fontSize: 13.5, fontWeight: 700 }}>Health &amp; Safety — RAMS &amp; Risk Assessment</span>
+        <span style={{ fontSize: 11, fontWeight: 700, color: safety.signedOff ? TOKENS.green : TOKENS.amber, background: safety.signedOff ? `${TOKENS.green}18` : `${TOKENS.amber}18`, borderRadius: 20, padding: "3px 9px" }}>
+          {safety.signedOff ? "Reviewed" : "Not yet reviewed"}
+        </span>
+      </button>
+      {open && (
+        <div style={{ padding: "0 14px 16px" }}>
+          <div style={{ fontSize: 12, color: TOKENS.slateLight, marginBottom: 12, lineHeight: 1.5 }}>{SAFETY_TEMPLATE.intro}</div>
+
+          <div style={{ fontSize: 11, fontWeight: 700, color: TOKENS.slateLight, textTransform: "uppercase", marginBottom: 6 }}>Method statement</div>
+          <ol style={{ margin: "0 0 14px", paddingLeft: 18, fontSize: 12.5, lineHeight: 1.7, color: TOKENS.ink }}>
+            {SAFETY_TEMPLATE.method.map((m, i) => <li key={i}>{m}</li>)}
+          </ol>
+
+          <div style={{ fontSize: 11, fontWeight: 700, color: TOKENS.slateLight, textTransform: "uppercase", marginBottom: 6 }}>Risk assessment</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 14 }}>
+            {SAFETY_TEMPLATE.hazards.map((h, i) => (
+              <div key={i} style={{ border: `1px solid ${TOKENS.line}`, borderRadius: 7, padding: "8px 10px" }}>
+                <div style={{ fontSize: 12.5, fontWeight: 700 }}>{h.hazard}</div>
+                <div style={{ fontSize: 11.5, color: TOKENS.slateLight, marginTop: 2 }}>Who's at risk: {h.who}</div>
+                <div style={{ fontSize: 12, marginTop: 3 }}>{h.controls}</div>
+              </div>
+            ))}
+          </div>
+
+          <div style={{ fontSize: 11, fontWeight: 700, color: TOKENS.slateLight, textTransform: "uppercase", marginBottom: 6 }}>Hazardous materials (COSHH)</div>
+          <div style={{ fontSize: 12.5, marginBottom: 14, lineHeight: 1.5 }}>{SAFETY_TEMPLATE.coshh}</div>
+
+          <div style={{ fontSize: 11, fontWeight: 700, color: TOKENS.slateLight, textTransform: "uppercase", marginBottom: 6 }}>PPE required</div>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 14 }}>
+            {SAFETY_TEMPLATE.ppe.map((p) => <span key={p} style={{ fontSize: 11.5, border: `1px solid ${TOKENS.line}`, borderRadius: 20, padding: "3px 10px" }}>{p}</span>)}
+          </div>
+
+          <div style={{ fontSize: 11, fontWeight: 700, color: TOKENS.slateLight, textTransform: "uppercase", marginBottom: 6 }}>Emergency procedure</div>
+          <div style={{ fontSize: 12.5, marginBottom: 16, lineHeight: 1.5 }}>{SAFETY_TEMPLATE.emergency}</div>
+
+          <div style={{ fontSize: 11, fontWeight: 700, color: TOKENS.slateLight, textTransform: "uppercase", marginBottom: 6 }}>Site-specific hazards / notes</div>
+          <textarea rows={2} value={siteNotes} onChange={(e) => setSiteNotes(e.target.value)} placeholder="Add anything specific to this site — e.g. suspected asbestos, restricted access, known faulty wiring…" style={{ marginBottom: 10 }} />
+          <button className="btn" style={{ marginBottom: 14 }} onClick={() => onUpdateSafety(job.id, { siteNotes })}>Save site notes</button>
+
+          <div style={{ borderTop: `1px solid ${TOKENS.line}`, paddingTop: 12, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+            {safety.signedOff ? (
+              <div style={{ fontSize: 12.5, color: TOKENS.green }}>Reviewed by {safety.signedBy} on {new Date(safety.signedAt).toLocaleDateString("en-GB")}</div>
+            ) : (
+              <button className="btn btn-primary" onClick={() => onUpdateSafety(job.id, { signedOff: true, signedBy: currentUser?.name || "Unknown", signedAt: new Date().toISOString(), siteNotes })}>
+                Confirm reviewed on site
+              </button>
+            )}
+            <button className="btn" onClick={() => onPrintSafety(job.id)}>Print / save as PDF</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PrintableSafety({ job, customer, onClose }) {
+  const safety = job.safety || { signedOff: false, siteNotes: "" };
+  return (
+    <div style={{ fontFamily: "Inter, sans-serif", color: "#111", background: "white", minHeight: "100vh", padding: "28px 32px", maxWidth: 780, margin: "0 auto" }}>
+      <style>{`
+        ${FONT_IMPORT}
+        @media print { .no-print { display: none !important; } body { background: white; } }
+        .rams-h { font-family: 'Barlow Condensed', sans-serif; font-weight: 700; }
+      `}</style>
+      <div className="no-print" style={{ display: "flex", gap: 8, marginBottom: 18 }}>
+        <button onClick={onClose} className="btn" style={{ border: "1px solid #ccc", borderRadius: 7, padding: "8px 14px", background: "white", cursor: "pointer", fontWeight: 600 }}>← Back to app</button>
+        <button onClick={() => window.print()} style={{ border: "none", borderRadius: 7, padding: "8px 14px", background: TOKENS.accent, color: "white", cursor: "pointer", fontWeight: 700 }}>Print / save as PDF</button>
+      </div>
+
+      <div className="rams-h" style={{ fontSize: 12, letterSpacing: ".05em", textTransform: "uppercase", color: "#666" }}>Aqualec Services — Generic RAMS &amp; Risk Assessment</div>
+      <div className="rams-h" style={{ fontSize: 26, marginBottom: 2 }}>{job.number} · {job.customer}</div>
+      <div style={{ fontSize: 13, color: "#555", marginBottom: 16 }}>{job.address}{job.description ? ` — ${job.description}` : ""}</div>
+
+      <p style={{ fontSize: 12.5, color: "#555", lineHeight: 1.5, marginBottom: 18 }}>{SAFETY_TEMPLATE.intro}</p>
+
+      <div className="rams-h" style={{ fontSize: 15, marginBottom: 8 }}>Method statement</div>
+      <ol style={{ paddingLeft: 20, fontSize: 12.5, lineHeight: 1.7, marginBottom: 18 }}>
+        {SAFETY_TEMPLATE.method.map((m, i) => <li key={i}>{m}</li>)}
+      </ol>
+
+      <div className="rams-h" style={{ fontSize: 15, marginBottom: 8 }}>Risk assessment</div>
+      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11.5, marginBottom: 18 }}>
+        <thead>
+          <tr style={{ background: "#f2f2f0", textAlign: "left" }}>
+            <th style={{ padding: "6px 8px", border: "1px solid #ddd" }}>Hazard</th>
+            <th style={{ padding: "6px 8px", border: "1px solid #ddd" }}>Who's at risk</th>
+            <th style={{ padding: "6px 8px", border: "1px solid #ddd" }}>Controls</th>
+          </tr>
+        </thead>
+        <tbody>
+          {SAFETY_TEMPLATE.hazards.map((h, i) => (
+            <tr key={i}>
+              <td style={{ padding: "6px 8px", border: "1px solid #ddd", fontWeight: 600 }}>{h.hazard}</td>
+              <td style={{ padding: "6px 8px", border: "1px solid #ddd" }}>{h.who}</td>
+              <td style={{ padding: "6px 8px", border: "1px solid #ddd" }}>{h.controls}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+
+      <div className="rams-h" style={{ fontSize: 15, marginBottom: 8 }}>Hazardous materials (COSHH)</div>
+      <p style={{ fontSize: 12.5, lineHeight: 1.5, marginBottom: 18 }}>{SAFETY_TEMPLATE.coshh}</p>
+
+      <div className="rams-h" style={{ fontSize: 15, marginBottom: 8 }}>PPE required</div>
+      <p style={{ fontSize: 12.5, marginBottom: 18 }}>{SAFETY_TEMPLATE.ppe.join(" · ")}</p>
+
+      <div className="rams-h" style={{ fontSize: 15, marginBottom: 8 }}>Emergency procedure</div>
+      <p style={{ fontSize: 12.5, lineHeight: 1.5, marginBottom: 18 }}>{SAFETY_TEMPLATE.emergency}</p>
+
+      <div className="rams-h" style={{ fontSize: 15, marginBottom: 8 }}>Site-specific hazards / notes</div>
+      <p style={{ fontSize: 12.5, lineHeight: 1.5, marginBottom: 18, minHeight: 20 }}>{safety.siteNotes || "None recorded."}</p>
+
+      <div style={{ borderTop: "1px solid #ccc", paddingTop: 14, fontSize: 12.5 }}>
+        {safety.signedOff
+          ? <>Reviewed on site by <strong>{safety.signedBy}</strong> on {new Date(safety.signedAt).toLocaleDateString("en-GB")}.</>
+          : "Not yet confirmed as reviewed on site."}
+      </div>
+    </div>
+  );
+}
+
+/* ================= CUSTOMERS ================= */
+function CustomersView({ customers, jobs, openCustomerId, setOpenCustomerId, onAdd, onRemove, onOpenJob, onNewJobForCustomer }) {
+  const [search, setSearch] = useState("");
+  const [name, setName] = useState("");
+  const [address, setAddress] = useState("");
+  const [phone, setPhone] = useState("");
+
+  const openCustomer = customers.find((c) => c.id === openCustomerId);
+
+  if (openCustomer) {
+    const customerJobs = jobs.filter((j) => j.customerId === openCustomer.id);
+    return (
+      <div style={{ maxWidth: 640 }}>
+        <button className="btn-ghost" onClick={() => setOpenCustomerId(null)} style={{ marginBottom: 12, fontWeight: 700, display: "flex", alignItems: "center", gap: 6 }}><ArrowLeft size={15} /> All customers</button>
+        <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontWeight: 700, fontSize: 24, marginBottom: 4 }}>{openCustomer.name}</div>
+        <div style={{ fontSize: 13.5, color: TOKENS.slate }}>{openCustomer.address}</div>
+        <div style={{ fontSize: 13.5, color: TOKENS.slate, marginBottom: 16 }}>{openCustomer.phone}</div>
+        <button className="btn btn-primary" style={{ marginBottom: 20 }} onClick={() => onNewJobForCustomer(openCustomer)}>+ New job for this customer</button>
+
+        <div style={{ fontSize: 11.5, fontWeight: 700, color: TOKENS.slateLight, textTransform: "uppercase", marginBottom: 8 }}>Job history ({customerJobs.length})</div>
+        {customerJobs.length === 0 && <div style={{ fontSize: 13, color: TOKENS.slateLight }}>No jobs for this customer yet.</div>}
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {customerJobs.map((j) => {
+            const meta = STATUS_META[j.status];
+            return (
+              <div key={j.id} onClick={() => onOpenJob(j.id)} style={{ background: "white", border: `1px solid ${TOKENS.line}`, borderRadius: 9, padding: "10px 14px", display: "flex", alignItems: "center", gap: 12, cursor: "pointer", flexWrap: "wrap" }}>
+                <div className="ticket" style={{ fontWeight: 700, fontSize: 12.5, background: TOKENS.paper, border: `1px dashed ${TOKENS.line}`, borderRadius: 6, padding: "3px 7px" }}>{j.number}</div>
+                <div style={{ flex: 1, fontSize: 13, minWidth: 100 }}>{j.description || j.jobType}</div>
+                <span style={{ fontSize: 11, fontWeight: 700, color: meta.colour, background: `${meta.colour}18`, borderRadius: 20, padding: "3px 9px" }}>{meta.label}</span>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
+
+  const filtered = customers.filter((c) => !search || c.name.toLowerCase().includes(search.toLowerCase()) || (c.address || "").toLowerCase().includes(search.toLowerCase()));
+
+  return (
+    <div>
+      <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontWeight: 700, fontSize: 22, marginBottom: 16 }}>Customers</div>
+      <div className="customers-layout">
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <input placeholder="Search customers…" value={search} onChange={(e) => setSearch(e.target.value)} style={{ marginBottom: 12 }} />
+          {filtered.length === 0 && <div style={{ color: TOKENS.slateLight, fontSize: 13.5, padding: "20px 4px" }}>No customers yet — add one, or they'll be created automatically the first time you raise a job for them.</div>}
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {filtered.map((c) => {
+              const count = jobs.filter((j) => j.customerId === c.id).length;
+              return (
+                <div key={c.id} onClick={() => setOpenCustomerId(c.id)} style={{ background: "white", border: `1px solid ${TOKENS.line}`, borderRadius: 9, padding: "12px 14px", display: "flex", alignItems: "center", gap: 12, cursor: "pointer", flexWrap: "wrap" }}>
+                  <div style={{ flex: 1, minWidth: 100 }}>
+                    <div style={{ fontWeight: 700, fontSize: 14 }}>{c.name}</div>
+                    <div style={{ fontSize: 12, color: TOKENS.slate, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{c.address}</div>
+                  </div>
+                  <div style={{ fontSize: 11.5, color: TOKENS.slateLight }}>{count} job{count !== 1 ? "s" : ""}</div>
+                  <button className="btn-ghost" onClick={(e) => { e.stopPropagation(); onRemove(c.id); }}>Remove</button>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+        <div className="customers-side">
+          <div style={{ background: "white", border: `1px solid ${TOKENS.line}`, borderRadius: 9, padding: 16 }}>
+            <div style={{ fontSize: 13.5, fontWeight: 700, marginBottom: 10 }}>Add a customer</div>
+            <div className="field"><label>Name</label><input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Mrs. Patel" /></div>
+            <div className="field"><label>Address</label><input value={address} onChange={(e) => setAddress(e.target.value)} placeholder="e.g. 14 Elm Road" /></div>
+            <div className="field"><label>Phone</label><input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="07…" /></div>
+            <button className="btn btn-primary" style={{ width: "100%" }} onClick={() => { if (name.trim()) { onAdd(name.trim(), address.trim(), phone.trim()); setName(""); setAddress(""); setPhone(""); } }}>Add customer</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ================= TEAM ================= */
+function TeamView({ users, jobs, currentUserId }) {
+  return (
+    <div style={{ maxWidth: 560 }}>
+      <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontWeight: 700, fontSize: 22, marginBottom: 6 }}>Team</div>
+      <div style={{ fontSize: 12.5, color: TOKENS.slateLight, marginBottom: 14 }}>Anyone who's created an account shows up here automatically — share the app link with new team members and they can sign themselves up.</div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {users.map((u) => {
+          const active = jobs.filter((j) => j.assignedTo === u.id && !["complete", "invoiced"].includes(j.status)).length;
+          return (
+            <div key={u.id} style={{ background: "white", border: `1px solid ${TOKENS.line}`, borderRadius: 9, padding: "10px 14px", display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+              <span style={{ width: 12, height: 12, borderRadius: "50%", background: u.colour, display: "inline-block" }} />
+              <div style={{ flex: 1, minWidth: 120 }}>
+                <div style={{ fontWeight: 700, fontSize: 14 }}>{u.name}{u.id === currentUserId && <span style={{ fontSize: 10.5, color: TOKENS.accent2, fontWeight: 700, marginLeft: 6 }}>YOU</span>}</div>
+                <div style={{ fontSize: 12, color: TOKENS.slate }}>{u.trade || "Technician"} · {active} active job{active !== 1 ? "s" : ""}</div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/* ================= MODALS ================= */
+function ModalShell({ title, onClose, children }) {
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-box" onClick={(e) => e.stopPropagation()}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+          <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontWeight: 700, fontSize: 20 }}>{title}</div>
+          <button className="btn-ghost" onClick={onClose} style={{ fontSize: 18, padding: 2 }}><X size={20} /></button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function JobModal({ modal, users, customers, currentUserId, onClose, onCreate }) {
+  const preset = modal.presetCustomer;
+  const [kind, setKind] = useState(modal.kind || "job");
+  const [customerMode, setCustomerMode] = useState(preset ? "existing" : (customers.length ? "existing" : "new"));
+  const [selectedCustomerId, setSelectedCustomerId] = useState(preset?.id || "");
+  const [customer, setCustomer] = useState("");
+  const [address, setAddress] = useState("");
+  const [phone, setPhone] = useState("");
+  const [description, setDescription] = useState("");
+  const [assignedTo, setAssignedTo] = useState(currentUserId || "");
+  const [jobType, setJobType] = useState("service");
+  const [priority, setPriority] = useState("normal");
+
+  const selectedCustomer = customers.find((c) => c.id === selectedCustomerId);
+  const canSubmit = customerMode === "existing" ? !!selectedCustomerId : customer.trim().length > 0;
+
+  const handleSubmit = () => {
+    if (customerMode === "existing" && selectedCustomer) {
+      onCreate({ kind, customerId: selectedCustomer.id, customer: selectedCustomer.name, address: selectedCustomer.address, phone: selectedCustomer.phone, description, assignedTo, jobType, priority });
+    } else {
+      onCreate({ kind, customerId: null, customer: customer.trim(), address, phone, description, assignedTo, jobType, priority });
+    }
+  };
+
+  return (
+    <ModalShell title={kind === "quote" ? "New quote" : "New job"} onClose={onClose}>
+      <div className="field">
+        <label>Type</label>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button className="btn" onClick={() => setKind("quote")} style={{ flex: 1, background: kind === "quote" ? TOKENS.ink : "white", color: kind === "quote" ? "white" : TOKENS.ink }}>Quote</button>
+          <button className="btn" onClick={() => setKind("job")} style={{ flex: 1, background: kind === "job" ? TOKENS.ink : "white", color: kind === "job" ? "white" : TOKENS.ink }}>Confirmed job</button>
+        </div>
+      </div>
+
+      <div className="field">
+        <label>Customer</label>
+        <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+          <button className="btn" onClick={() => setCustomerMode("existing")} style={{ flex: 1, background: customerMode === "existing" ? TOKENS.ink : "white", color: customerMode === "existing" ? "white" : TOKENS.ink }}>Existing</button>
+          <button className="btn" onClick={() => setCustomerMode("new")} style={{ flex: 1, background: customerMode === "new" ? TOKENS.ink : "white", color: customerMode === "new" ? "white" : TOKENS.ink }}>New customer</button>
+        </div>
+        {customerMode === "existing" ? (
+          customers.length ? (
+            <>
+              <select value={selectedCustomerId} onChange={(e) => setSelectedCustomerId(e.target.value)}>
+                <option value="">— Select a customer —</option>
+                {customers.map((c) => <option key={c.id} value={c.id}>{c.name}{c.address ? ` · ${c.address}` : ""}</option>)}
+              </select>
+              {selectedCustomer && <div style={{ fontSize: 12, color: TOKENS.slateLight, marginTop: 6 }}>{selectedCustomer.address}{selectedCustomer.phone ? ` · ${selectedCustomer.phone}` : ""}</div>}
+            </>
+          ) : (
+            <div style={{ fontSize: 12.5, color: TOKENS.slateLight }}>No customers saved yet — switch to "New customer".</div>
+          )
+        ) : (
+          <>
+            <div className="field"><input value={customer} onChange={(e) => setCustomer(e.target.value)} placeholder="Customer name, e.g. Mrs. Patel" /></div>
+            <div className="field"><input value={address} onChange={(e) => setAddress(e.target.value)} placeholder="Site address" /></div>
+            <div className="field"><input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="Phone" /></div>
+          </>
+        )}
+      </div>
+
+      <div style={{ display: "flex", gap: 10 }}>
+        <div className="field" style={{ flex: 1 }}>
+          <label>Job type</label>
+          <select value={jobType} onChange={(e) => setJobType(e.target.value)}>{Object.entries(JOB_TYPES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select>
+        </div>
+        <div className="field" style={{ flex: 1 }}>
+          <label>Priority</label>
+          <select value={priority} onChange={(e) => setPriority(e.target.value)}>{Object.entries(PRIORITY_META).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}</select>
+        </div>
+      </div>
+      <div className="field"><label>Job description (optional — can add later)</label><textarea rows={3} value={description} onChange={(e) => setDescription(e.target.value)} placeholder="e.g. Annual boiler service, Vaillant ecoTEC" /></div>
+      <div className="field">
+        <label>Assign to</label>
+        <select value={assignedTo} onChange={(e) => setAssignedTo(e.target.value)}>
+          <option value="">Unassigned</option>
+          {users.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+        </select>
+      </div>
+      <button className="btn btn-primary" style={{ width: "100%", marginTop: 6 }} disabled={!canSubmit} onClick={handleSubmit}>
+        Create {kind === "quote" ? "quote" : "job"} number
+      </button>
+    </ModalShell>
+  );
+}
+
+function EventModal({ modal, users, jobs, onClose, onCreate, onUpdate, onDelete }) {
+  const editing = modal.event;
+  const preset = modal.presetJob;
+  const [title, setTitle] = useState(editing?.title || (preset ? `Visit — ${preset.customer}` : ""));
+  const [date, setDate] = useState(editing?.date || modal.date);
+  const [time, setTime] = useState(editing?.time || "09:00");
+  const [duration, setDuration] = useState(editing?.duration || "1h");
+  const [assignedTo, setAssignedTo] = useState(editing?.assignedTo || preset?.assignedTo || (users[0]?.id ?? ""));
+  const [jobId, setJobId] = useState(editing?.jobId || preset?.id || "");
+  const [notes, setNotes] = useState(editing?.notes || "");
+
+  const linkedJobs = jobs.filter((j) => !["complete", "invoiced"].includes(j.status));
+
+  return (
+    <ModalShell title={editing ? "Edit booking" : "Book a visit"} onClose={onClose}>
+      <div className="field"><label>Title</label><input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="e.g. Boiler service, Site survey" /></div>
+      <div style={{ display: "flex", gap: 10 }}>
+        <div className="field" style={{ flex: 1 }}><label>Date</label><input type="date" value={date} onChange={(e) => setDate(e.target.value)} /></div>
+        <div className="field" style={{ flex: 1 }}><label>Time</label><input type="time" value={time} onChange={(e) => setTime(e.target.value)} /></div>
+      </div>
+      <div className="field"><label>Duration</label><input value={duration} onChange={(e) => setDuration(e.target.value)} placeholder="e.g. 1h, 2h30" /></div>
+      <div className="field">
+        <label>Technician</label>
+        <select value={assignedTo} onChange={(e) => setAssignedTo(e.target.value)}>
+          <option value="">Unassigned</option>
+          {users.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+        </select>
+      </div>
+      <div className="field">
+        <label>Link to job / quote (optional)</label>
+        <select value={jobId} onChange={(e) => setJobId(e.target.value)}>
+          <option value="">— No linked job —</option>
+          {linkedJobs.map((j) => <option key={j.id} value={j.id}>{j.number} · {j.customer}</option>)}
+        </select>
+      </div>
+      <div className="field"><label>Notes</label><textarea rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Access instructions, parts to bring…" /></div>
+
+      <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
+        {editing && <button className="btn" style={{ color: TOKENS.red, borderColor: TOKENS.red }} onClick={() => onDelete(editing.id)}>Delete</button>}
+        <button className="btn btn-primary" style={{ flex: 1 }} disabled={!title.trim() || !date}
+          onClick={() => {
+            const payload = { title: title.trim(), date, time, duration, assignedTo: assignedTo || null, jobId: jobId || null, notes };
+            if (editing) onUpdate(editing.id, payload); else onCreate(payload);
+          }}>
+          {editing ? "Save changes" : "Book visit"}
+        </button>
+      </div>
+    </ModalShell>
+  );
+}
+
+function LogWorkModal({ modal, onClose, onSave }) {
+  const { job, date } = modal;
+  const [text, setText] = useState("");
+  return (
+    <ModalShell title="Log work completed" onClose={onClose}>
+      <div style={{ marginBottom: 10 }}>
+        <div className="ticket" style={{ fontSize: 12.5, fontWeight: 700, color: TOKENS.accent }}>{job.number}</div>
+        <div style={{ fontSize: 15, fontWeight: 700 }}>{job.customer}</div>
+        <div style={{ fontSize: 12.5, color: TOKENS.slateLight }}>{shortDate(date)}</div>
+      </div>
+      <div className="field">
+        <label>What was completed today</label>
+        <textarea rows={4} autoFocus value={text} onChange={(e) => setText(e.target.value)} placeholder="e.g. Replaced pump, tested pressure, awaiting part for valve" />
+      </div>
+      <button className="btn btn-primary" style={{ width: "100%" }} disabled={!text.trim()} onClick={() => onSave(job.id, text.trim(), date)}>Save to job</button>
+    </ModalShell>
+  );
+}
