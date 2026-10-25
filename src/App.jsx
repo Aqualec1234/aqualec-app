@@ -235,7 +235,11 @@ function toDbEvent(patch) {
   return out;
 }
 
+// Captured before Supabase tidies the URL, so a password-reset link always opens the "set new password" screen
+const OPENED_FROM_RESET_LINK = typeof window !== "undefined" && /type=recovery/.test(window.location.hash + window.location.search);
+
 export default function App() {
+  const [recovery, setRecovery] = useState(OPENED_FROM_RESET_LINK);
   const [session, setSession] = useState(undefined); // undefined = checking, null = signed out
   const [authLoading, setAuthLoading] = useState(true);
   const [profile, setProfile] = useState(undefined); // undefined = checking/none yet
@@ -271,7 +275,7 @@ export default function App() {
   // ---- auth session ----
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => { setSession(data.session); setAuthLoading(false); });
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, s) => setSession(s));
+    const { data: sub } = supabase.auth.onAuthStateChange((event, s) => { if (event === "PASSWORD_RECOVERY") setRecovery(true); setSession(s); });
     return () => sub.subscription.unsubscribe();
   }, []);
 
@@ -624,6 +628,9 @@ export default function App() {
   if (authLoading || session === undefined) {
     return <CentredMessage>Loading Aqualec Job Tracker…</CentredMessage>;
   }
+  if (recovery && session) {
+    return <NewPasswordScreen onDone={() => { setRecovery(false); if (window.location.hash) window.history.replaceState(null, "", window.location.pathname); }} />;
+  }
   if (!session) {
     return <AuthGate />;
   }
@@ -763,7 +770,8 @@ function CentredMessage({ children }) {
 
 /* ================= AUTH ================= */
 function AuthGate() {
-  const [mode, setMode] = useState("signin"); // signin | signup
+  const [mode, setMode] = useState("signin"); // signin | signup | forgot
+  const [resetSent, setResetSent] = useState(false);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
@@ -773,7 +781,11 @@ function AuthGate() {
   const submit = async () => {
     setError(""); setBusy(true);
     try {
-      if (mode === "signup") {
+      if (mode === "forgot") {
+        const { error: err } = await supabase.auth.resetPasswordForEmail(email.trim(), { redirectTo: window.location.origin });
+        if (err) throw err;
+        setResetSent(true);
+      } else if (mode === "signup") {
         const { data, error: err } = await supabase.auth.signUp({ email, password });
         if (err) throw err;
         if (data.session) { /* auto-confirmed */ } else { setCheckEmail(true); }
@@ -795,7 +807,12 @@ function AuthGate() {
         <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontWeight: 800, fontSize: 30 }}>AQUALEC</div>
         <div style={{ color: "#9AA3AC", fontSize: 13, marginBottom: 26, textTransform: "uppercase", letterSpacing: ".05em" }}>Team sign in</div>
 
-        {checkEmail ? (
+        {resetSent ? (
+          <div style={{ fontSize: 13.5, color: "#AEB6BD", lineHeight: 1.6 }}>
+            If <strong style={{ color: "white" }}>{email}</strong> has an account, we've emailed a link to reset the password. Open it on this device — it brings you back here to choose a new one. Check your junk folder if it hasn't arrived in a few minutes.
+            <button onClick={() => { setResetSent(false); setMode("signin"); setPassword(""); }} style={{ display: "block", marginTop: 16, width: "100%", background: TOKENS.accent, border: "none", color: "white", borderRadius: 8, padding: "12px 0", fontWeight: 700 }}>Back to sign in</button>
+          </div>
+        ) : checkEmail ? (
           <div style={{ fontSize: 13.5, color: "#AEB6BD", lineHeight: 1.6 }}>
             Check your email to confirm your account, then come back and sign in.
             <button onClick={() => { setCheckEmail(false); setMode("signin"); }} style={{ display: "block", marginTop: 16, width: "100%", background: TOKENS.accent, border: "none", color: "white", borderRadius: 8, padding: "12px 0", fontWeight: 700 }}>Back to sign in</button>
@@ -803,13 +820,61 @@ function AuthGate() {
         ) : (
           <div style={{ textAlign: "left" }}>
             <div style={{ marginBottom: 10 }}><input type="email" placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} /></div>
-            <div style={{ marginBottom: 10 }}><input type="password" placeholder="Password" value={password} onChange={(e) => setPassword(e.target.value)} /></div>
+            {mode === "forgot" && <div style={{ fontSize: 13, color: "#AEB6BD", marginBottom: 10, lineHeight: 1.5 }}>Enter the email you sign in with and we'll send you a link to set a new password.</div>}
+            {mode !== "forgot" && <div style={{ marginBottom: 10 }}><input type="password" placeholder="Password" value={password} onChange={(e) => setPassword(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && email && password) submit(); }} /></div>}
             {error && <div style={{ color: "#E88", fontSize: 12.5, marginBottom: 10 }}>{error}</div>}
-            <button disabled={busy || !email || !password} onClick={submit} style={{ width: "100%", background: TOKENS.accent, border: "none", color: "white", borderRadius: 8, padding: "12px 0", fontWeight: 700, opacity: busy ? 0.6 : 1 }}>
-              {busy ? "…" : mode === "signup" ? "Create account" : "Sign in"}
+            <button disabled={busy || !email || (mode !== "forgot" && !password)} onClick={submit} style={{ width: "100%", background: TOKENS.accent, border: "none", color: "white", borderRadius: 8, padding: "12px 0", fontWeight: 700, opacity: busy ? 0.6 : 1 }}>
+              {busy ? "…" : mode === "signup" ? "Create account" : mode === "forgot" ? "Send reset link" : "Sign in"}
             </button>
-            <button onClick={() => { setMode(mode === "signup" ? "signin" : "signup"); setError(""); }} style={{ marginTop: 12, background: "none", border: "none", color: "#9AA3AC", fontSize: 12.5, width: "100%" }}>
-              {mode === "signup" ? "Already have an account? Sign in" : "New team member? Create an account"}
+            {mode === "signin" && (
+              <button onClick={() => { setMode("forgot"); setError(""); }} style={{ marginTop: 12, background: "none", border: "none", color: "#C9CFD4", fontSize: 13, fontWeight: 600, width: "100%", padding: "6px 0" }}>Forgot password?</button>
+            )}
+            <button onClick={() => { setMode(mode === "signin" ? "signup" : "signin"); setError(""); }} style={{ marginTop: 6, background: "none", border: "none", color: "#9AA3AC", fontSize: 12.5, width: "100%", padding: "6px 0" }}>
+              {mode === "signin" ? "New team member? Create an account" : "Back to sign in"}
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function NewPasswordScreen({ onDone }) {
+  const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [done, setDone] = useState(false);
+  const tooShort = password.length > 0 && password.length < 8;
+  const mismatch = confirm.length > 0 && confirm !== password;
+
+  const submit = async () => {
+    setBusy(true); setError("");
+    const { error: err } = await supabase.auth.updateUser({ password });
+    setBusy(false);
+    if (err) { setError(err.message); return; }
+    setDone(true);
+  };
+
+  return (
+    <div style={{ fontFamily: "Inter, sans-serif", minHeight: "100vh", background: TOKENS.ink, display: "flex", alignItems: "center", justifyContent: "center", padding: "24px 16px" }}>
+      <style>{FONT_IMPORT}{`button{font-family:Inter,sans-serif;cursor:pointer;} input{font-family:Inter,sans-serif;border:1px solid #333;border-radius:6px;padding:11px;font-size:16px;width:100%;box-sizing:border-box;background:#1E2733;color:white;}`}</style>
+      <div style={{ width: "100%", maxWidth: 340, color: "white", textAlign: "center" }}>
+        <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontWeight: 800, fontSize: 30 }}>AQUALEC</div>
+        <div style={{ color: "#9AA3AC", fontSize: 13, marginBottom: 22, textTransform: "uppercase", letterSpacing: ".05em" }}>Set a new password</div>
+        {done ? (
+          <div style={{ fontSize: 13.5, color: "#AEB6BD", lineHeight: 1.6 }}>
+            Password changed.
+            <button onClick={onDone} style={{ display: "block", marginTop: 16, width: "100%", background: TOKENS.accent, border: "none", color: "white", borderRadius: 8, padding: "12px 0", fontWeight: 700 }}>Continue to the app</button>
+          </div>
+        ) : (
+          <div style={{ textAlign: "left" }}>
+            <div style={{ marginBottom: 10 }}><input type="password" autoComplete="new-password" placeholder="New password (8+ characters)" value={password} onChange={(e) => setPassword(e.target.value)} /></div>
+            <div style={{ marginBottom: 10 }}><input type="password" autoComplete="new-password" placeholder="Type it again" value={confirm} onChange={(e) => setConfirm(e.target.value)} /></div>
+            {(tooShort || mismatch) && <div style={{ color: "#E3B565", fontSize: 12.5, marginBottom: 10 }}>{tooShort ? "Use at least 8 characters." : "The two passwords don't match."}</div>}
+            {error && <div style={{ color: "#E88", fontSize: 12.5, marginBottom: 10 }}>{error}</div>}
+            <button disabled={busy || password.length < 8 || confirm !== password} onClick={submit} style={{ width: "100%", background: TOKENS.accent, border: "none", color: "white", borderRadius: 8, padding: "12px 0", fontWeight: 700, opacity: busy || password.length < 8 || confirm !== password ? 0.6 : 1 }}>
+              {busy ? "…" : "Save new password"}
             </button>
           </div>
         )}
