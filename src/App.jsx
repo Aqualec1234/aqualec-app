@@ -117,6 +117,31 @@ const mapsLinks = (address) => {
 };
 const nextFridayKey = (d = new Date()) => { const x = new Date(d.getFullYear(), d.getMonth(), d.getDate()); x.setDate(x.getDate() + ((5 - x.getDay() + 7) % 7)); return toKey(x); };
 const addMonthsKey = (key, m) => { const d = fromKey(key); d.setMonth(d.getMonth() + m); return toKey(d); };
+// ---- PIN lock (per person, per device) ----
+const PIN_LOCK_AFTER_MS = 15 * 60 * 1000;
+const PIN_MAX_TRIES = 5;
+const ls = {
+  get: (k) => { try { return localStorage.getItem(k); } catch { return null; } },
+  set: (k, v) => { try { localStorage.setItem(k, v); } catch { /* storage unavailable */ } },
+  del: (k) => { try { localStorage.removeItem(k); } catch { /* storage unavailable */ } },
+};
+const ss = {
+  get: (k) => { try { return sessionStorage.getItem(k); } catch { return null; } },
+  set: (k, v) => { try { sessionStorage.setItem(k, v); } catch { /* storage unavailable */ } },
+  del: (k) => { try { sessionStorage.removeItem(k); } catch { /* storage unavailable */ } },
+};
+const pinKey = (uid) => `aq-pin-${uid}`;
+const triesKey = (uid) => `aq-pin-tries-${uid}`;
+const ACTIVE_KEY = "aq-last-active"; // sessionStorage: cleared when the app is closed, so reopening asks for the PIN
+const markActive = () => ss.set(ACTIVE_KEY, String(Date.now()));
+const isFreshlyActive = () => { const t = Number(ss.get(ACTIVE_KEY)); return !!t && Date.now() - t < PIN_LOCK_AFTER_MS; };
+async function hashPin(pin, salt) {
+  const enc = new TextEncoder();
+  const key = await crypto.subtle.importKey("raw", enc.encode(pin), "PBKDF2", false, ["deriveBits"]);
+  const bits = await crypto.subtle.deriveBits({ name: "PBKDF2", salt: enc.encode(salt), iterations: 150000, hash: "SHA-256" }, key, 256);
+  return btoa(String.fromCharCode(...new Uint8Array(bits)));
+}
+
 const telHref = (phone) => `tel:${String(phone).replace(/[^0-9+]/g, "")}`;
 
 const seedUsers = () => [{ id: uid(), name: "Jack Moore", colour: TECH_COLOURS[0], trade: "Director / Gas Safe" }];
@@ -240,6 +265,7 @@ const OPENED_FROM_RESET_LINK = typeof window !== "undefined" && /type=recovery/.
 
 export default function App() {
   const [recovery, setRecovery] = useState(OPENED_FROM_RESET_LINK);
+  const [pinState, setPinState] = useState("checking"); // checking | setup | locked | unlocked
   const [session, setSession] = useState(undefined); // undefined = checking, null = signed out
   const [authLoading, setAuthLoading] = useState(true);
   const [profile, setProfile] = useState(undefined); // undefined = checking/none yet
@@ -288,6 +314,32 @@ export default function App() {
     })();
   }, [session]);
 
+  // decide whether the PIN screen is needed whenever the signed-in person changes
+  useEffect(() => {
+    const uid = session?.user?.id;
+    if (!uid) { setPinState("checking"); return; }
+    if (!ls.get(pinKey(uid))) setPinState("setup");
+    else setPinState(isFreshlyActive() ? "unlocked" : "locked");
+  }, [session?.user?.id]);
+
+  // lock after 15 minutes without use
+  useEffect(() => {
+    if (pinState !== "unlocked") return;
+    markActive();
+    let last = 0;
+    const onActivity = () => { const n = Date.now(); if (n - last > 15000) { last = n; markActive(); } };
+    const check = () => { if (!isFreshlyActive()) setPinState("locked"); };
+    const onVis = () => { if (document.visibilityState === "visible") check(); };
+    ["pointerdown", "keydown", "scroll"].forEach((e) => window.addEventListener(e, onActivity, { passive: true }));
+    document.addEventListener("visibilitychange", onVis);
+    const t = setInterval(check, 30000);
+    return () => {
+      ["pointerdown", "keydown", "scroll"].forEach((e) => window.removeEventListener(e, onActivity));
+      document.removeEventListener("visibilitychange", onVis);
+      clearInterval(t);
+    };
+  }, [pinState]);
+
   const fetchProfiles = async () => { const { data } = await supabase.from("profiles").select("*").order("name"); setProfiles(data || []); };
   const fetchSubcontractors = async () => { const { data } = await supabase.from("subcontractors").select("*").order("name"); setSubcontractors(data || []); };
   const fetchCustomers = async () => { const { data } = await supabase.from("customers").select("*").order("name"); setCustomers(data || []); };
@@ -306,17 +358,19 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [profile?.id]);
 
+  const team = useMemo(() => profiles.filter((p) => p.approved), [profiles]);
   const assignees = useMemo(() => [
-    ...profiles.map((p) => ({ ...p, isSub: false })),
+    ...team.map((p) => ({ ...p, isSub: false })),
     ...subcontractors.map((s) => ({ ...s, isSub: true })),
-  ], [profiles, subcontractors]);
+  ], [team, subcontractors]);
   const userById = useMemo(() => Object.fromEntries(assignees.map((u) => [u.id, u])), [assignees]);
   const jobById = useMemo(() => Object.fromEntries(jobs.map((j) => [j.id, j])), [jobs]);
   const customerById = useMemo(() => Object.fromEntries(customers.map((c) => [c.id, c])), [customers]);
 
   const me = useMemo(() => profiles.find((p) => p.id === profile?.id) || profile, [profiles, profile]);
   const isAdmin = !!me?.is_admin;
-  const officeAdmin = profiles.find((p) => p.is_admin) || null;
+  const officeAdmin = team.find((p) => p.is_admin) || null;
+  const approvers = team.filter((p) => p.can_approve);
   const noAdminsYet = !officeAdmin;
   const showOffice = isAdmin || noAdminsYet;
 
@@ -331,7 +385,8 @@ export default function App() {
     return map;
   }, [events, visibleTechs]);
 
-  const signOut = async () => { await supabase.auth.signOut(); setView("today"); };
+  const signOut = async () => { ss.del(ACTIVE_KEY); await supabase.auth.signOut(); setView("today"); };
+  const forgetPinAndSignOut = async () => { if (session?.user?.id) { ls.del(pinKey(session.user.id)); ls.del(triesKey(session.user.id)); } await signOut(); };
 
   // ---- team management ----
   const updateProfile = async (id, patch) => {
@@ -629,7 +684,7 @@ export default function App() {
     return <CentredMessage>Loading Aqualec Job Tracker…</CentredMessage>;
   }
   if (recovery && session) {
-    return <NewPasswordScreen onDone={() => { setRecovery(false); if (window.location.hash) window.history.replaceState(null, "", window.location.pathname); }} />;
+    return <NewPasswordScreen onDone={() => { setRecovery(false); setPinState(ls.get(pinKey(session.user.id)) ? "unlocked" : "setup"); if (window.location.hash) window.history.replaceState(null, "", window.location.pathname); }} />;
   }
   if (!session) {
     return <AuthGate />;
@@ -637,8 +692,18 @@ export default function App() {
   if (profile === undefined) {
     return <CentredMessage>Loading your profile…</CentredMessage>;
   }
+  if (pinState === "setup" || pinState === "locked") {
+    return <PinScreen mode={pinState} uid={session.user.id} email={session.user.email}
+      onUnlocked={() => { markActive(); setPinState("unlocked"); }} onForgot={forgetPinAndSignOut} />;
+  }
+  if (pinState === "checking") {
+    return <CentredMessage>Loading…</CentredMessage>;
+  }
   if (profile === null) {
     return <ProfileSetup session={session} onDone={(p) => setProfile(p)} onSignOut={signOut} />;
+  }
+  if (!profile.approved) {
+    return <AwaitingApproval profile={profile} onCheck={async () => { const { data } = await supabase.from("profiles").select("*").eq("id", profile.id).maybeSingle(); setProfile(data || null); }} onSignOut={signOut} />;
   }
   if (dataLoading) {
     return <CentredMessage>Loading jobs, diary and customers…</CentredMessage>;
@@ -711,7 +776,7 @@ export default function App() {
           {view === "reports" && <ReportsView jobs={jobs} today={today} />}
 
           {view === "team" && (
-            <TeamView profiles={profiles} subcontractors={subcontractors} jobs={jobs} currentUserId={profile.id}
+            <TeamView profiles={profiles} subcontractors={subcontractors} jobs={jobs} currentUserId={profile.id} canApprove={!!me?.can_approve} approvers={approvers}
               onUpdateProfile={updateProfile} onRemoveProfile={removeProfile}
               onAddSubcontractor={addSubcontractor} onUpdateSubcontractor={updateSubcontractor} onRemoveSubcontractor={removeSubcontractor} />
           )}
@@ -792,6 +857,7 @@ function AuthGate() {
       } else {
         const { error: err } = await supabase.auth.signInWithPassword({ email, password });
         if (err) throw err;
+        markActive(); // just typed the password — no PIN needed this time
       }
     } catch (e) {
       setError(e.message || "Something went wrong.");
@@ -839,6 +905,97 @@ function AuthGate() {
   );
 }
 
+const DARK_SCREEN_CSS = `button{font-family:Inter,sans-serif;cursor:pointer;} input{font-family:Inter,sans-serif;border:1px solid #333;border-radius:6px;padding:11px;font-size:16px;width:100%;box-sizing:border-box;background:#1E2733;color:white;}`;
+
+function AwaitingApproval({ profile, onCheck, onSignOut }) {
+  const [busy, setBusy] = useState(false);
+  return (
+    <div style={{ fontFamily: "Inter, sans-serif", minHeight: "100vh", background: TOKENS.ink, display: "flex", alignItems: "center", justifyContent: "center", padding: "24px 16px" }}>
+      <style>{FONT_IMPORT}{DARK_SCREEN_CSS}</style>
+      <div style={{ width: "100%", maxWidth: 340, color: "white", textAlign: "center" }}>
+        <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontWeight: 800, fontSize: 30 }}>AQUALEC</div>
+        <div style={{ color: "#9AA3AC", fontSize: 13, marginBottom: 22, textTransform: "uppercase", letterSpacing: ".05em" }}>Waiting for approval</div>
+        <div style={{ fontSize: 14, color: "#C9CFD4", lineHeight: 1.6, marginBottom: 20 }}>
+          Thanks {profile.name.split(" ")[0]} — your account has been created. Jack or Jessica needs to approve it before you can see jobs and the diary. Let them know you've signed up.
+        </div>
+        <button disabled={busy} onClick={async () => { setBusy(true); await onCheck(); setBusy(false); }} style={{ width: "100%", background: TOKENS.accent, border: "none", color: "white", borderRadius: 8, padding: "12px 0", fontWeight: 700, opacity: busy ? 0.6 : 1 }}>{busy ? "Checking…" : "Check again"}</button>
+        <button onClick={onSignOut} style={{ marginTop: 12, background: "none", border: "none", color: "#9AA3AC", fontSize: 12.5, width: "100%" }}>Sign out</button>
+      </div>
+    </div>
+  );
+}
+
+function PinScreen({ mode, uid, email, onUnlocked, onForgot }) {
+  const [step, setStep] = useState(mode === "setup" ? "new" : "enter"); // new | confirm | enter
+  const [pin, setPin] = useState("");
+  const [first, setFirst] = useState("");
+  const [msg, setMsg] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const finish = async (value) => {
+    setBusy(true);
+    if (step === "new") { setFirst(value); setPin(""); setStep("confirm"); setMsg(""); setBusy(false); return; }
+    if (step === "confirm") {
+      if (value !== first) { setMsg("Those didn't match — start again."); setFirst(""); setPin(""); setStep("new"); setBusy(false); return; }
+      const salt = uid + ":" + Math.random().toString(36).slice(2);
+      ls.set(pinKey(uid), JSON.stringify({ salt, hash: await hashPin(value, salt) }));
+      ls.del(triesKey(uid));
+      onUnlocked();
+      return;
+    }
+    // unlock
+    let rec = null; try { rec = JSON.parse(ls.get(pinKey(uid)) || "null"); } catch { rec = null; }
+    if (rec && (await hashPin(value, rec.salt)) === rec.hash) { ls.del(triesKey(uid)); onUnlocked(); return; }
+    const tries = Number(ls.get(triesKey(uid)) || 0) + 1;
+    if (tries >= PIN_MAX_TRIES) { await onForgot(); return; }
+    ls.set(triesKey(uid), String(tries));
+    setMsg(`Wrong PIN — ${PIN_MAX_TRIES - tries} ${PIN_MAX_TRIES - tries === 1 ? "try" : "tries"} left before you'll need your password.`);
+    setPin(""); setBusy(false);
+  };
+
+  const press = (d) => {
+    if (busy) return;
+    if (d === "del") { setPin((p) => p.slice(0, -1)); return; }
+    const next = (pin + d).slice(0, 4);
+    setPin(next);
+    if (next.length === 4) setTimeout(() => finish(next), 120);
+  };
+
+  useEffect(() => {
+    const onKey = (e) => { if (/^[0-9]$/.test(e.key)) press(e.key); else if (e.key === "Backspace") press("del"); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
+
+  const title = step === "new" ? "Create a 4-digit PIN" : step === "confirm" ? "Type your PIN again" : "Enter your PIN";
+  const sub = step === "enter" ? email : "You'll use this to open the app on this phone.";
+  const key = { height: 64, borderRadius: 32, border: "none", background: "rgba(255,255,255,0.08)", color: "white", fontSize: 24, fontWeight: 600 };
+
+  return (
+    <div style={{ fontFamily: "Inter, sans-serif", minHeight: "100vh", background: TOKENS.ink, display: "flex", alignItems: "center", justifyContent: "center", padding: "24px 16px" }}>
+      <style>{FONT_IMPORT}{DARK_SCREEN_CSS}</style>
+      <div style={{ width: "100%", maxWidth: 300, color: "white", textAlign: "center" }}>
+        <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontWeight: 800, fontSize: 28 }}>AQUALEC</div>
+        <div style={{ fontSize: 17, fontWeight: 700, marginTop: 14 }}>{title}</div>
+        <div style={{ fontSize: 12.5, color: "#9AA3AC", marginTop: 4, minHeight: 18 }}>{sub}</div>
+        <div style={{ display: "flex", justifyContent: "center", gap: 16, margin: "22px 0 10px" }}>
+          {[0, 1, 2, 3].map((i) => <span key={i} style={{ width: 14, height: 14, borderRadius: "50%", border: "2px solid #C9CFD4", background: i < pin.length ? "#C9CFD4" : "transparent" }} />)}
+        </div>
+        <div style={{ fontSize: 12.5, color: "#E3B565", minHeight: 36, lineHeight: 1.4 }}>{msg}</div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12, marginTop: 6 }}>
+          {["1", "2", "3", "4", "5", "6", "7", "8", "9"].map((d) => <button key={d} style={key} onClick={() => press(d)}>{d}</button>)}
+          <span />
+          <button style={key} onClick={() => press("0")}>0</button>
+          <button style={{ ...key, background: "none", fontSize: 15 }} onClick={() => press("del")} aria-label="Delete">⌫</button>
+        </div>
+        <button onClick={onForgot} style={{ marginTop: 22, background: "none", border: "none", color: "#9AA3AC", fontSize: 12.5, width: "100%" }}>
+          {step === "enter" ? "Forgotten your PIN? Sign in with your password" : "Sign out"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function NewPasswordScreen({ onDone }) {
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
@@ -851,6 +1008,7 @@ function NewPasswordScreen({ onDone }) {
   const submit = async () => {
     setBusy(true); setError("");
     const { error: err } = await supabase.auth.updateUser({ password });
+    if (!err) markActive();
     setBusy(false);
     if (err) { setError(err.message); return; }
     setDone(true);
@@ -1669,7 +1827,7 @@ function CustomersView({ customers, jobs, openCustomerId, setOpenCustomerId, onA
 }
 
 /* ================= TEAM ================= */
-function ProfileRow({ user, jobs, currentUserId, onUpdate, onRemove }) {
+function ProfileRow({ user, jobs, currentUserId, onUpdate, onRemove, canApprove }) {
   const [trade, setTrade] = useState(user.trade || "");
   const [editing, setEditing] = useState(false);
   const active = jobs.filter((j) => j.assignedTo === user.id && !["complete", "invoiced"].includes(j.status)).length;
@@ -1689,12 +1847,25 @@ function ProfileRow({ user, jobs, currentUserId, onUpdate, onRemove }) {
           <div style={{ fontSize: 12, color: TOKENS.slate }}>{user.trade || "Technician"} · {active} active job{active !== 1 ? "s" : ""}</div>
         )}
       </div>
-      <label style={{ display: "flex", alignItems: "center", gap: 6, margin: 0, cursor: "pointer", textTransform: "none", letterSpacing: 0, fontSize: 12.5, color: user.is_admin ? TOKENS.amber : TOKENS.slate }}>
-        <input type="checkbox" checked={!!user.is_admin} onChange={() => onUpdate(user.id, { is_admin: !user.is_admin })} style={{ width: 20, height: 20, accentColor: TOKENS.amber }} />
-        Office admin
-      </label>
+      {canApprove ? (
+        <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+          <label style={{ display: "flex", alignItems: "center", gap: 6, margin: 0, cursor: "pointer", textTransform: "none", letterSpacing: 0, fontSize: 12.5, color: user.is_admin ? TOKENS.amber : TOKENS.slate }}>
+            <input type="checkbox" checked={!!user.is_admin} onChange={() => onUpdate(user.id, { is_admin: !user.is_admin })} style={{ width: 20, height: 20, accentColor: TOKENS.amber }} />
+            Office admin
+          </label>
+          <label style={{ display: "flex", alignItems: "center", gap: 6, margin: 0, cursor: "pointer", textTransform: "none", letterSpacing: 0, fontSize: 12.5, color: user.can_approve ? TOKENS.accent2 : TOKENS.slate }}>
+            <input type="checkbox" checked={!!user.can_approve} disabled={user.id === currentUserId} onChange={() => onUpdate(user.id, { can_approve: !user.can_approve })} style={{ width: 20, height: 20, accentColor: TOKENS.accent2 }} />
+            Can approve
+          </label>
+        </div>
+      ) : (
+        <div style={{ display: "flex", gap: 6 }}>
+          {user.is_admin && <span style={{ fontSize: 11, fontWeight: 700, color: TOKENS.amber }}>OFFICE ADMIN</span>}
+          {user.can_approve && <span style={{ fontSize: 11, fontWeight: 700, color: TOKENS.accent2 }}>APPROVER</span>}
+        </div>
+      )}
       {!editing && <button className="btn-ghost" onClick={() => setEditing(true)}>Edit role</button>}
-      <button className="btn-ghost" style={{ color: TOKENS.red }} onClick={() => { if (window.confirm(`Remove ${user.name} from the team? They'll need to set up their profile again if they sign back in.`)) onRemove(user.id); }}>Remove</button>
+      {canApprove && user.id !== currentUserId && <button className="btn-ghost" style={{ color: TOKENS.red }} onClick={() => { if (window.confirm(`Remove ${user.name} from the team? They'll lose access straight away and would need approving again.`)) onRemove(user.id); }}>Remove</button>}
     </div>
   );
 }
@@ -1729,17 +1900,44 @@ function SubcontractorRow({ sub, jobs, onUpdate, onRemove }) {
   );
 }
 
-function TeamView({ profiles, subcontractors, jobs, currentUserId, onUpdateProfile, onRemoveProfile, onAddSubcontractor, onUpdateSubcontractor, onRemoveSubcontractor }) {
+function TeamView({ profiles, subcontractors, jobs, currentUserId, canApprove, approvers, onUpdateProfile, onRemoveProfile, onAddSubcontractor, onUpdateSubcontractor, onRemoveSubcontractor }) {
   const [name, setName] = useState("");
   const [trade, setTrade] = useState("");
+  const pending = profiles.filter((p) => !p.approved);
+  const approved = profiles.filter((p) => p.approved);
+  const approverNames = approvers.map((a) => a.name.split(" ")[0]).join(" or ") || "an approver";
 
   return (
     <div style={{ maxWidth: 600 }}>
       <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontWeight: 700, fontSize: 22, marginBottom: 6 }}>Team</div>
-      <div style={{ fontSize: 12.5, color: TOKENS.slateLight, marginBottom: 14 }}>Anyone who's created an account shows up here automatically — share the app link with new team members and they can sign themselves up. Roles can be edited by anyone on the team. Tick <strong>Office admin</strong> for whoever does the invoicing and quotes — finished jobs and office-priced quotes go onto their diary for the coming Friday, and they get the Office page.</div>
+      <div style={{ fontSize: 12.5, color: TOKENS.slateLight, marginBottom: 14 }}>New team members sign up with the app link, then wait here until {approverNames} approves them — they can't see any jobs or customers until then. <strong>Office admin</strong> gets the Office page, and finished jobs and office-priced quotes go on their diary for Friday. <strong>Can approve</strong> lets someone approve or remove team members.</div>
+
+      {pending.length > 0 && (
+        <div style={{ background: `${TOKENS.amber}12`, border: `1px solid ${TOKENS.amber}55`, borderRadius: 10, padding: 12, marginBottom: 18 }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: TOKENS.amber, textTransform: "uppercase", marginBottom: 8 }}>Waiting for approval ({pending.length})</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {pending.map((u) => (
+              <div key={u.id} style={{ background: "white", border: `1px solid ${TOKENS.line}`, borderRadius: 8, padding: "10px 12px", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                <div style={{ flex: 1, minWidth: 140 }}>
+                  <div style={{ fontWeight: 700, fontSize: 14 }}>{u.name}</div>
+                  <div style={{ fontSize: 12, color: TOKENS.slate }}>{u.trade || "No role given"} · signed up {new Date(u.created_at).toLocaleDateString("en-GB")}</div>
+                </div>
+                {canApprove ? (
+                  <>
+                    <button className="btn btn-primary" onClick={() => onUpdateProfile(u.id, { approved: true })}>Approve</button>
+                    <button className="btn" style={{ color: TOKENS.red, borderColor: TOKENS.red }} onClick={() => { if (window.confirm(`Turn down ${u.name}? Their sign-up request will be removed.`)) onRemoveProfile(u.id); }}>Turn down</button>
+                  </>
+                ) : (
+                  <span style={{ fontSize: 12, color: TOKENS.slateLight }}>Waiting for {approverNames}</span>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
       <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 24 }}>
-        {profiles.map((u) => (
-          <ProfileRow key={u.id} user={u} jobs={jobs} currentUserId={currentUserId} onUpdate={onUpdateProfile} onRemove={onRemoveProfile} />
+        {approved.map((u) => (
+          <ProfileRow key={u.id} user={u} jobs={jobs} currentUserId={currentUserId} canApprove={canApprove} onUpdate={onUpdateProfile} onRemove={onRemoveProfile} />
         ))}
       </div>
 
