@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
-import { CalendarDays, ClipboardList, Users, HardHat, Plus, ChevronLeft, ChevronRight, X, Camera, ArrowLeft, LogOut, PoundSterling, Check, CheckCircle2, XCircle } from "lucide-react";
+import { CalendarDays, ClipboardList, Users, HardHat, Plus, ChevronLeft, ChevronRight, X, Camera, ArrowLeft, LogOut, PoundSterling, Check, CheckCircle2, XCircle, MapPin, Navigation, Phone } from "lucide-react";
 import { supabase } from "./supabaseClient";
 
 /* ---------------------------------------------------------------
@@ -97,6 +97,20 @@ const monthLabel = (d) => d.toLocaleDateString("en-GB", { month: "long", year: "
 const dayLabel = (d) => d.toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long" });
 const shortDate = (k) => fromKey(k).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
 const uid = () => Math.random().toString(36).slice(2, 10);
+
+// Financial year — runs 1 April to 31 March. Change FY_START_MONTH if the company year-end differs (0 = Jan, 3 = Apr).
+const FY_START_MONTH = 3;
+const fyStartYear = (d) => (d.getMonth() >= FY_START_MONTH ? d.getFullYear() : d.getFullYear() - 1);
+const fyLabel = (startYear) => `${startYear}/${String((startYear + 1) % 100).padStart(2, "0")}`;
+const FY_MONTH_NAME = new Date(2000, FY_START_MONTH, 1).toLocaleDateString("en-GB", { month: "long" });
+
+// Maps — Apple Maps on iPhone/iPad, Google Maps everywhere
+const isAppleMobile = () => typeof navigator !== "undefined" && (/iPad|iPhone|iPod/.test(navigator.userAgent) || (/Macintosh/.test(navigator.userAgent) && "ontouchend" in document));
+const mapsLinks = (address) => {
+  const q = encodeURIComponent(address);
+  return { apple: `https://maps.apple.com/?daddr=${q}`, google: `https://www.google.com/maps/dir/?api=1&destination=${q}` };
+};
+const telHref = (phone) => `tel:${String(phone).replace(/[^0-9+]/g, "")}`;
 
 const seedUsers = () => [{ id: uid(), name: "Jack Moore", colour: TECH_COLOURS[0], trade: "Director / Gas Safe" }];
 const DEFAULT_DATA = () => ({ users: seedUsers(), customers: [], jobs: [], events: [], seq: { quote: 0, job: 0 } });
@@ -381,6 +395,11 @@ export default function App() {
   };
 
   const updateJob = async (id, patch) => {
+    if (patch.status === "invoiced") {
+      const current = jobsRef.current.find((j) => j.id === id);
+      const fin = patch.finance || current?.finance || {};
+      if (!fin.invoicedAt) patch = { ...patch, finance: { ...fin, invoicedAt: new Date().toISOString() } };
+    }
     setSaveState("saving");
     const { error } = await supabase.from("jobs").update(toDbJob(patch)).eq("id", id);
     if (error) { console.error(error); setSaveState("error"); return; }
@@ -388,10 +407,10 @@ export default function App() {
     setSaveState("saved");
   };
 
-  const addJobNote = async (id, text, date) => {
+  const addJobNote = async (id, text, date, extra = {}) => {
     const job = jobsRef.current.find((j) => j.id === id);
     if (!job) return;
-    const notes = [...job.notes, { id: uid(), ts: new Date().toISOString(), date: date || toKey(new Date()), author: profile?.name || "Unknown", text }];
+    const notes = [...job.notes, { id: uid(), ts: new Date().toISOString(), date: date || toKey(new Date()), author: profile?.name || "Unknown", text, ...extra }];
     await updateJob(id, { notes });
   };
   const addChecklistItem = async (jobId, text) => {
@@ -463,11 +482,12 @@ export default function App() {
     await fetchEvents();
     setSaveState("saved");
   };
-  const setEventOutcome = async (eventId, outcome, note) => {
+  const setEventOutcome = async (eventId, outcome, note, linkJobId) => {
     const ev = events.find((e) => e.id === eventId);
-    await updateEvent(eventId, { outcome, outcomeNote: note });
-    if (ev?.jobId) {
-      await addJobNote(ev.jobId, `${outcome === "completed" ? "Visit completed" : "Visit rejected"} (${shortDate(ev.date)}): ${note}`, ev.date);
+    const jobId = ev?.jobId || linkJobId || null;
+    await updateEvent(eventId, { outcome, outcomeNote: note, ...(jobId && !ev?.jobId ? { jobId } : {}) });
+    if (jobId) {
+      await addJobNote(jobId, `${outcome === "completed" ? "Visit completed" : "Visit couldn't go ahead"} — ${ev?.title || "visit"} (${shortDate(ev.date)}): ${note}`, ev.date, { kind: "feedback", outcome, eventId });
     }
   };
 
@@ -563,7 +583,7 @@ export default function App() {
               onNewJobForCustomer={(customer) => setJobModal({ mode: "new", kind: "job", presetCustomer: customer })} />
           )}
 
-          {view === "reports" && <ReportsView jobs={jobs} />}
+          {view === "reports" && <ReportsView jobs={jobs} today={today} />}
 
           {view === "team" && (
             <TeamView profiles={profiles} subcontractors={subcontractors} jobs={jobs} currentUserId={profile.id}
@@ -593,8 +613,8 @@ export default function App() {
       )}
 
       {outcomeModal && (
-        <OutcomeModal modal={outcomeModal} onClose={() => setOutcomeModal(null)}
-          onSave={async (id, outcome, note) => { await setEventOutcome(id, outcome, note); setOutcomeModal(null); }}
+        <OutcomeModal modal={outcomeModal} jobs={jobs} onClose={() => setOutcomeModal(null)}
+          onSave={async (id, outcome, note, linkJobId) => { await setEventOutcome(id, outcome, note, linkJobId); setOutcomeModal(null); }}
           onRebook={(ev) => { setOutcomeModal(null); setEventModal({ date: toKey(new Date()), event: null, presetJob: jobById[ev.jobId] }); }} />
       )}
     </div>
@@ -798,6 +818,27 @@ function MobileTabBar({ view, setView }) {
   );
 }
 
+/* ================= ADDRESS / MAPS ================= */
+function AddressLinks({ address, phone, compact }) {
+  if (!address && !phone) return null;
+  const pill = { display: "inline-flex", alignItems: "center", gap: 5, fontSize: 12.5, fontWeight: 700, padding: "8px 12px", borderRadius: 20, textDecoration: "none", border: `1px solid ${TOKENS.line}`, background: "white", color: TOKENS.accent2, minHeight: 38 };
+  const links = address ? mapsLinks(address) : null;
+  return (
+    <div>
+      {address && (
+        <div style={{ fontSize: compact ? 12 : 13.5, color: TOKENS.slate, marginBottom: 6, display: "flex", gap: 5, alignItems: "flex-start" }}>
+          <MapPin size={compact ? 13 : 15} style={{ flexShrink: 0, marginTop: 2 }} />{address}
+        </div>
+      )}
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+        {links && isAppleMobile() && <a href={links.apple} target="_blank" rel="noopener noreferrer" style={pill}><Navigation size={14} /> Apple Maps</a>}
+        {links && <a href={links.google} target="_blank" rel="noopener noreferrer" style={pill}><Navigation size={14} /> Google Maps</a>}
+        {phone && <a href={telHref(phone)} style={pill}><Phone size={14} /> {compact ? "Call" : phone}</a>}
+      </div>
+    </div>
+  );
+}
+
 /* ================= DIARY ================= */
 function DiaryView({ cursor, setCursor, today, selectedDay, setSelectedDay, eventsByDay, users, activeTechs, setActiveTechs, jobById, userById, onNewEvent, onEditEvent, onOpenJob, onLogWork, onMarkOutcome }) {
   const year = cursor.getFullYear();
@@ -827,7 +868,10 @@ function DiaryView({ cursor, setCursor, today, selectedDay, setSelectedDay, even
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16, flexWrap: "wrap", gap: 8 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <button className="btn" onClick={() => setCursor(new Date(year, month - 1, 1))}><ChevronLeft size={15} /></button>
-            <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontWeight: 700, fontSize: 22, minWidth: 150 }}>{monthLabel(cursor)}</div>
+            <div style={{ minWidth: 150 }}>
+              <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontWeight: 700, fontSize: 22, lineHeight: 1.1 }}>{monthLabel(cursor)}</div>
+              <div style={{ fontSize: 11, fontWeight: 700, color: TOKENS.accent2, letterSpacing: ".03em" }}>FY {fyLabel(fyStartYear(cursor))}</div>
+            </div>
             <button className="btn" onClick={() => setCursor(new Date(year, month + 1, 1))}><ChevronRight size={15} /></button>
             <button className="btn hide-mobile" onClick={() => { setCursor(new Date()); setSelectedDay(toKey(new Date())); }}>Today</button>
           </div>
@@ -915,15 +959,18 @@ function DiaryView({ cursor, setCursor, today, selectedDay, setSelectedDay, even
                   {job && (
                     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 6, gap: 6, flexWrap: "wrap" }}>
                       <span className="ticket" onClick={() => onOpenJob(job.id)} style={{ cursor: "pointer", fontSize: 10.5, color: TOKENS.accent, fontWeight: 700 }}>{job.number}{job.projectName ? ` — ${job.projectName}` : ""} · {job.customer}</span>
-                      <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
-                        {!ev.outcome && (
-                          <>
-                            <button className="btn-ghost" title="Mark complete" onClick={() => onMarkOutcome(ev, "completed")} style={{ color: TOKENS.green, padding: "2px 4px" }}><Check size={16} /></button>
-                            <button className="btn-ghost" title="Reject" onClick={() => onMarkOutcome(ev, "rejected")} style={{ color: TOKENS.red, padding: "2px 4px" }}><X size={16} /></button>
-                          </>
-                        )}
-                        <button className="btn" onClick={() => onLogWork(job, ev.date)} style={{ fontSize: 10.5, padding: "4px 9px", minHeight: "auto" }}>Log work</button>
-                      </div>
+                      <button className="btn" onClick={() => onLogWork(job, ev.date)} style={{ fontSize: 11, padding: "5px 10px", minHeight: "auto" }}>Log work</button>
+                    </div>
+                  )}
+                  {job?.address && <div style={{ marginTop: 8 }}><AddressLinks address={job.address} phone={job.phone} compact /></div>}
+                  {!ev.outcome && (
+                    <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+                      <button onClick={() => onMarkOutcome(ev, "completed")} style={{ flex: 1, minHeight: 48, borderRadius: 9, border: `2px solid ${TOKENS.green}`, background: `${TOKENS.green}12`, color: TOKENS.green, fontWeight: 700, fontSize: 14, display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+                        <Check size={22} strokeWidth={3} /> Done
+                      </button>
+                      <button onClick={() => onMarkOutcome(ev, "rejected")} style={{ flex: 1, minHeight: 48, borderRadius: 9, border: `2px solid ${TOKENS.red}`, background: `${TOKENS.red}10`, color: TOKENS.red, fontWeight: 700, fontSize: 14, display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+                        <X size={22} strokeWidth={3} /> Not done
+                      </button>
                     </div>
                   )}
                 </div>
@@ -1140,8 +1187,7 @@ function JobDetail({ job, users, userById, customer, events, onBack, onAddNote, 
 
       <ProgressStepper status={job.status} onSet={(s) => onUpdateJob(job.id, { status: s })} />
 
-      <div style={{ fontSize: 13.5, color: TOKENS.slate, marginBottom: 4 }}>{job.address}</div>
-      <div style={{ fontSize: 13.5, color: TOKENS.slate, marginBottom: 14 }}>{job.phone}</div>
+      <div style={{ marginBottom: 14 }}><AddressLinks address={job.address} phone={job.phone} /></div>
       <div style={{ background: "white", border: `1px solid ${TOKENS.line}`, borderRadius: 9, padding: 14, marginBottom: 14 }}>
         <div style={{ fontSize: 13.5 }}>{job.description || "No description given."}</div>
       </div>
@@ -1167,10 +1213,10 @@ function JobDetail({ job, users, userById, customer, events, onBack, onAddNote, 
         {allDone && <div style={{ fontSize: 12.5, color: TOKENS.green, marginBottom: 8, fontWeight: 600 }}>All tasks complete — ready to invoice.</div>}
         <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 8 }}>
           {checklist.map((c) => (
-            <label key={c.id} style={{ display: "flex", alignItems: "center", gap: 8, background: "white", border: `1px solid ${TOKENS.line}`, borderRadius: 7, padding: "9px 10px", fontSize: 13, cursor: "pointer" }}>
-              <input type="checkbox" checked={c.done} onChange={() => checklistOps.toggleChecklistItem(job.id, c.id)} style={{ width: 18, height: 18, flexShrink: 0 }} />
+            <label key={c.id} style={{ display: "flex", alignItems: "center", gap: 12, background: "white", border: `1px solid ${c.done ? TOKENS.green : TOKENS.line}`, borderRadius: 8, padding: "12px 12px", fontSize: 14, cursor: "pointer", minHeight: 50 }}>
+              <input type="checkbox" checked={c.done} onChange={() => checklistOps.toggleChecklistItem(job.id, c.id)} style={{ width: 26, height: 26, flexShrink: 0, accentColor: TOKENS.green, cursor: "pointer" }} />
               <span style={{ flex: 1, textDecoration: c.done ? "line-through" : "none", color: c.done ? TOKENS.slateLight : TOKENS.ink }}>{c.text}</span>
-              <button className="btn-ghost" onClick={(e) => { e.preventDefault(); checklistOps.removeChecklistItem(job.id, c.id); }} style={{ fontSize: 15, padding: "0 4px" }}><X size={15} /></button>
+              <button className="btn-ghost" onClick={(e) => { e.preventDefault(); if (window.confirm(`Remove "${c.text}" from the checklist?`)) checklistOps.removeChecklistItem(job.id, c.id); }} style={{ padding: 8 }}><X size={17} /></button>
             </label>
           ))}
         </div>
@@ -1200,11 +1246,23 @@ function JobDetail({ job, users, userById, customer, events, onBack, onAddNote, 
       </div>
 
       {events.length > 0 && (
-        <div style={{ marginBottom: 18 }}>
-          <div style={{ fontSize: 11.5, fontWeight: 700, color: TOKENS.slateLight, textTransform: "uppercase", marginBottom: 6 }}>Booked visits</div>
-          {events.map((ev) => (
-            <div key={ev.id} style={{ fontSize: 12.5, color: TOKENS.slate, padding: "4px 0" }}>{shortDate(ev.date)} — {ev.title} ({userById[ev.assignedTo]?.name || "Unassigned"})</div>
-          ))}
+        <div style={{ marginBottom: 22 }}>
+          <div style={{ fontSize: 11.5, fontWeight: 700, color: TOKENS.slateLight, textTransform: "uppercase", marginBottom: 6 }}>Visits &amp; feedback</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {events.slice().sort((a, b) => (b.date + (b.time || "")).localeCompare(a.date + (a.time || ""))).map((ev) => {
+              const c = ev.outcome === "completed" ? TOKENS.green : ev.outcome === "rejected" ? TOKENS.red : TOKENS.line;
+              return (
+                <div key={ev.id} style={{ background: "white", border: `1px solid ${TOKENS.line}`, borderLeft: `3px solid ${c}`, borderRadius: 7, padding: "8px 10px" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 12.5 }}>
+                    <span style={{ fontWeight: 700 }}>{shortDate(ev.date)}{ev.time ? ` · ${ev.time}` : ""} — {ev.title}</span>
+                    <span style={{ fontSize: 11, fontWeight: 700, color: ev.outcome ? c : TOKENS.slateLight, whiteSpace: "nowrap" }}>{ev.outcome === "completed" ? "Done" : ev.outcome === "rejected" ? "Not done" : "Booked"}</span>
+                  </div>
+                  <div style={{ fontSize: 11.5, color: TOKENS.slate, marginTop: 2 }}>{userById[ev.assignedTo]?.name || "Unassigned"}</div>
+                  {ev.outcomeNote && <div style={{ fontSize: 13, marginTop: 4 }}>{ev.outcomeNote}</div>}
+                </div>
+              );
+            })}
+          </div>
         </div>
       )}
 
@@ -1213,7 +1271,7 @@ function JobDetail({ job, users, userById, customer, events, onBack, onAddNote, 
         {job.notes.length === 0 && <div style={{ fontSize: 13, color: TOKENS.slateLight }}>No notes yet — log what's completed each day here.</div>}
         {job.notes.slice().reverse().map((n) => (
           <div key={n.id} style={{ background: "white", border: `1px solid ${TOKENS.line}`, borderRadius: 7, padding: "8px 10px" }}>
-            <div style={{ fontSize: 10.5, color: TOKENS.slateLight, marginBottom: 3, fontWeight: 600 }}>{n.date ? shortDate(n.date) : new Date(n.ts).toLocaleDateString("en-GB")}{n.author ? ` · ${n.author}` : ""}</div>
+            <div style={{ fontSize: 10.5, color: TOKENS.slateLight, marginBottom: 3, fontWeight: 600 }}>{n.date ? shortDate(n.date) : new Date(n.ts).toLocaleDateString("en-GB")}{n.author ? ` · ${n.author}` : ""}{n.kind === "feedback" && <span style={{ marginLeft: 6, color: n.outcome === "rejected" ? TOKENS.red : TOKENS.green }}>DIARY FEEDBACK</span>}</div>
             <div style={{ fontSize: 13 }}>{n.text}</div>
           </div>
         ))}
@@ -1386,8 +1444,7 @@ function CustomersView({ customers, jobs, openCustomerId, setOpenCustomerId, onA
       <div style={{ maxWidth: 640 }}>
         <button className="btn-ghost" onClick={() => setOpenCustomerId(null)} style={{ marginBottom: 12, fontWeight: 700, display: "flex", alignItems: "center", gap: 6 }}><ArrowLeft size={15} /> All customers</button>
         <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontWeight: 700, fontSize: 24, marginBottom: 4 }}>{openCustomer.name}</div>
-        <div style={{ fontSize: 13.5, color: TOKENS.slate }}>{openCustomer.address}</div>
-        <div style={{ fontSize: 13.5, color: TOKENS.slate, marginBottom: 16 }}>{openCustomer.phone}</div>
+        <div style={{ marginBottom: 16 }}><AddressLinks address={openCustomer.address} phone={openCustomer.phone} /></div>
         <button className="btn btn-primary" style={{ marginBottom: 20 }} onClick={() => onNewJobForCustomer(openCustomer)}>+ New job for this customer</button>
 
         <div style={{ fontSize: 11.5, fontWeight: 700, color: TOKENS.slateLight, textTransform: "uppercase", marginBottom: 8 }}>Job history ({customerJobs.length})</div>
@@ -1538,15 +1595,21 @@ function TeamView({ profiles, subcontractors, jobs, currentUserId, onUpdateProfi
 }
 
 /* ================= REPORTS ================= */
-function ReportsView({ jobs }) {
-  const [range, setRange] = useState("all"); // all | month
+function ReportsView({ jobs, today }) {
+  const currentFY = fyStartYear(today);
+  const [range, setRange] = useState(`fy-${currentFY}`); // fy-YYYY | month | all
 
-  const now = new Date();
+  // A job counts in the period it was invoiced; if not invoiced yet, the period it was raised
+  const jobDate = (j) => new Date(j.finance?.invoicedAt || j.createdAt);
+  const fyOptions = Array.from(new Set([currentFY, ...jobs.map((j) => fyStartYear(jobDate(j)))])).sort((a, b) => b - a);
+
   const inRange = (j) => {
     if (range === "all") return true;
-    const d = new Date(j.createdAt);
-    return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth();
+    const d = jobDate(j);
+    if (range === "month") return d.getFullYear() === today.getFullYear() && d.getMonth() === today.getMonth();
+    return fyStartYear(d) === Number(range.slice(3));
   };
+  const periodText = range === "all" ? "All time" : range === "month" ? "This month" : `Financial year ${fyLabel(Number(range.slice(3)))} (1 ${FY_MONTH_NAME} – end of ${new Date(2000, (FY_START_MONTH + 11) % 12, 1).toLocaleDateString("en-GB", { month: "long" })})`;
 
   const realJobs = jobs.filter((j) => j.kind === "job" && inRange(j));
 
@@ -1567,12 +1630,17 @@ function ReportsView({ jobs }) {
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6, flexWrap: "wrap", gap: 8 }}>
         <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontWeight: 700, fontSize: 22 }}>Reports</div>
-        <div style={{ display: "flex", gap: 8 }}>
-          <button className="btn" onClick={() => setRange("all")} style={{ background: range === "all" ? TOKENS.ink : "white", color: range === "all" ? "white" : TOKENS.ink }}>All time</button>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <select value={range.startsWith("fy-") ? range : ""} onChange={(e) => e.target.value && setRange(e.target.value)} style={{ width: "auto", background: range.startsWith("fy-") ? TOKENS.ink : "white", color: range.startsWith("fy-") ? "white" : TOKENS.ink, fontWeight: 600, fontSize: 13.5 }}>
+            {!range.startsWith("fy-") && <option value="">Financial year…</option>}
+            {fyOptions.map((y) => <option key={y} value={`fy-${y}`}>FY {fyLabel(y)}{y === currentFY ? " (current)" : ""}</option>)}
+          </select>
           <button className="btn" onClick={() => setRange("month")} style={{ background: range === "month" ? TOKENS.ink : "white", color: range === "month" ? "white" : TOKENS.ink }}>This month</button>
+          <button className="btn" onClick={() => setRange("all")} style={{ background: range === "all" ? TOKENS.ink : "white", color: range === "all" ? "white" : TOKENS.ink }}>All time</button>
         </div>
       </div>
-      <div style={{ fontSize: 12.5, color: TOKENS.slateLight, marginBottom: 18 }}>Based on jobs (not quotes) with labour, materials and invoice figures added. {grand.jobCount} job{grand.jobCount !== 1 ? "s" : ""} in this period.</div>
+      <div style={{ fontSize: 13, fontWeight: 700, color: TOKENS.accent2, marginBottom: 2 }}>{periodText}</div>
+      <div style={{ fontSize: 12.5, color: TOKENS.slateLight, marginBottom: 18 }}>Jobs count in the period they were invoiced (or raised, if not invoiced yet). Based on jobs (not quotes) with labour, materials and invoice figures added. {grand.jobCount} job{grand.jobCount !== 1 ? "s" : ""} in this period.</div>
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(230px, 1fr))", gap: 12, marginBottom: 18 }}>
         {totalsByDept.map((d) => (
@@ -1809,10 +1877,12 @@ function LogWorkModal({ modal, onClose, onSave }) {
   );
 }
 
-function OutcomeModal({ modal, onClose, onSave, onRebook }) {
+function OutcomeModal({ modal, jobs, onClose, onSave, onRebook }) {
   const { event, kind } = modal;
   const isReject = kind === "rejected";
   const [text, setText] = useState(event.outcomeNote || "");
+  const [linkJobId, setLinkJobId] = useState("");
+  const linkedJob = event.jobId ? jobs.find((j) => j.id === event.jobId) : null;
   return (
     <ModalShell title={isReject ? "Reject this visit" : "Mark visit complete"} onClose={onClose}>
       <div style={{ marginBottom: 10 }}>
@@ -1823,12 +1893,23 @@ function OutcomeModal({ modal, onClose, onSave, onRebook }) {
         <label>{isReject ? "Reason it couldn't be done" : "Feedback — what was done"}</label>
         <textarea rows={4} autoFocus value={text} onChange={(e) => setText(e.target.value)} placeholder={isReject ? "e.g. Customer not in, access blocked, part unavailable…" : "e.g. Boiler serviced, tested and working"} />
       </div>
+      {linkedJob ? (
+        <div style={{ fontSize: 12, color: TOKENS.slateLight, marginBottom: 10 }}>This feedback will be saved to job <span className="ticket" style={{ color: TOKENS.accent, fontWeight: 700 }}>{linkedJob.number}</span> · {linkedJob.customer}.</div>
+      ) : (
+        <div className="field">
+          <label>Save feedback to job</label>
+          <select value={linkJobId} onChange={(e) => setLinkJobId(e.target.value)}>
+            <option value="">— Not linked to a job —</option>
+            {jobs.filter((j) => j.status !== "invoiced").map((j) => <option key={j.id} value={j.id}>{j.number} · {j.customer}{j.address ? `, ${j.address}` : ""}</option>)}
+          </select>
+        </div>
+      )}
       {isReject && (
         <div style={{ fontSize: 12, color: TOKENS.slateLight, marginBottom: 10 }}>You can book another visit for this job straight after saving.</div>
       )}
       <div style={{ display: "flex", gap: 8 }}>
         {isReject && event.jobId && <button className="btn" onClick={() => onRebook(event)}>Book another visit</button>}
-        <button className="btn btn-primary" style={{ flex: 1 }} disabled={!text.trim()} onClick={() => onSave(event.id, kind, text.trim())}>
+        <button className="btn btn-primary" style={{ flex: 1 }} disabled={!text.trim()} onClick={() => onSave(event.id, kind, text.trim(), linkJobId || null)}>
           Save
         </button>
       </div>
