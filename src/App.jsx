@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
-import { CalendarDays, ClipboardList, Users, HardHat, Plus, ChevronLeft, ChevronRight, X, Camera, ArrowLeft, LogOut, PoundSterling, Check, CheckCircle2, XCircle, MapPin, Navigation, Phone } from "lucide-react";
+import { CalendarDays, ClipboardList, Users, HardHat, Plus, ChevronLeft, ChevronRight, X, Camera, ArrowLeft, LogOut, PoundSterling, Check, CheckCircle2, XCircle, MapPin, Navigation, Phone, Sun, Inbox, MoreHorizontal } from "lucide-react";
 import { supabase } from "./supabaseClient";
 
 /* ---------------------------------------------------------------
@@ -82,13 +82,18 @@ const SAFETY_TEMPLATE = {
   emergency: "In case of injury, a gas smell, electric shock or fire: stop work immediately, make the area safe if it's safe to do so, call 999 if required, then contact the office/director as soon as practical and complete an incident report.",
 };
 
-const NAV_ITEMS = [
-  { id: "diary", label: "Diary", Icon: CalendarDays },
-  { id: "jobs", label: "Jobs", Icon: ClipboardList },
-  { id: "customers", label: "Customers", Icon: Users },
-  { id: "reports", label: "Reports", Icon: PoundSterling },
-  { id: "team", label: "Team", Icon: HardHat },
-];
+const NAV_ALL = {
+  today: { id: "today", label: "My day", Icon: Sun },
+  diary: { id: "diary", label: "Diary", Icon: CalendarDays },
+  jobs: { id: "jobs", label: "Jobs", Icon: ClipboardList },
+  office: { id: "office", label: "Office", Icon: Inbox },
+  customers: { id: "customers", label: "Customers", Icon: Users },
+  reports: { id: "reports", label: "Reports", Icon: PoundSterling },
+  team: { id: "team", label: "Team", Icon: HardHat },
+};
+const navIds = (showOffice) => ["today", "diary", "jobs", ...(showOffice ? ["office"] : []), "customers", "reports", "team"];
+
+const REMINDER_KINDS = { service: "Boiler service", cp12: "Gas safety certificate (CP12)", eicr: "EICR", pat: "PAT testing", aircon: "Air con service", other: "Other" };
 
 const pad2 = (n) => String(n).padStart(2, "0");
 const toKey = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
@@ -110,6 +115,8 @@ const mapsLinks = (address) => {
   const q = encodeURIComponent(address);
   return { apple: `https://maps.apple.com/?daddr=${q}`, google: `https://www.google.com/maps/dir/?api=1&destination=${q}` };
 };
+const nextFridayKey = (d = new Date()) => { const x = new Date(d.getFullYear(), d.getMonth(), d.getDate()); x.setDate(x.getDate() + ((5 - x.getDay() + 7) % 7)); return toKey(x); };
+const addMonthsKey = (key, m) => { const d = fromKey(key); d.setMonth(d.getMonth() + m); return toKey(d); };
 const telHref = (phone) => `tel:${String(phone).replace(/[^0-9+]/g, "")}`;
 
 const seedUsers = () => [{ id: uid(), name: "Jack Moore", colour: TECH_COLOURS[0], trade: "Director / Gas Safe" }];
@@ -210,7 +217,10 @@ function jobFromDb(row) {
   };
 }
 function eventFromDb(row) {
-  return { id: row.id, date: row.date, time: row.time, duration: row.duration, title: row.title, jobId: row.job_id, assignedTo: row.assigned_to, notes: row.notes, outcome: row.outcome || null, outcomeNote: row.outcome_note || "" };
+  return { id: row.id, date: row.date, time: row.time, duration: row.duration, title: row.title, jobId: row.job_id, assignedTo: row.assigned_to, notes: row.notes, outcome: row.outcome || null, outcomeNote: row.outcome_note || "", kind: row.kind || "visit", details: row.details || null, signaturePath: row.signature_path || null, signedName: row.signed_name || "" };
+}
+function reminderFromDb(r) {
+  return { id: r.id, customerId: r.customer_id, jobId: r.job_id, customer: r.customer || "", address: r.address || "", phone: r.phone || "", kind: r.kind, dueDate: r.due_date, notes: r.notes || "", done: r.done };
 }
 function toDbJob(patch) {
   const map = { assignedTo: "assigned_to", jobType: "job_type", customerId: "customer_id", projectName: "project_name" };
@@ -219,7 +229,7 @@ function toDbJob(patch) {
   return out;
 }
 function toDbEvent(patch) {
-  const map = { assignedTo: "assigned_to", jobId: "job_id", outcomeNote: "outcome_note" };
+  const map = { assignedTo: "assigned_to", jobId: "job_id", outcomeNote: "outcome_note", signaturePath: "signature_path", signedName: "signed_name" };
   const out = {};
   for (const [k, v] of Object.entries(patch)) out[map[k] || k] = v;
   return out;
@@ -234,12 +244,13 @@ export default function App() {
   const [customers, setCustomers] = useState([]);
   const [jobs, setJobs] = useState([]);
   const [events, setEvents] = useState([]);
+  const [reminders, setReminders] = useState([]);
   const [dataLoading, setDataLoading] = useState(true);
   const [saveState, setSaveState] = useState("idle");
   const jobsRef = useRef([]);
   useEffect(() => { jobsRef.current = jobs; }, [jobs]);
 
-  const [view, setView] = useState("diary");
+  const [view, setView] = useState("today");
   const [today] = useState(new Date());
   const [cursor, setCursor] = useState(new Date());
   const [selectedDay, setSelectedDay] = useState(toKey(new Date()));
@@ -254,6 +265,8 @@ export default function App() {
   const [images, setImages] = useState({});
   const [printJobId, setPrintJobId] = useState(null);
   const [outcomeModal, setOutcomeModal] = useState(null);
+  const [officeModal, setOfficeModal] = useState(null);
+  const [moreOpen, setMoreOpen] = useState(false);
 
   // ---- auth session ----
   useEffect(() => {
@@ -276,7 +289,8 @@ export default function App() {
   const fetchCustomers = async () => { const { data } = await supabase.from("customers").select("*").order("name"); setCustomers(data || []); };
   const fetchJobs = async () => { const { data } = await supabase.from("jobs").select("*").order("created_at", { ascending: false }); setJobs((data || []).map(jobFromDb)); };
   const fetchEvents = async () => { const { data } = await supabase.from("events").select("*").order("date"); setEvents((data || []).map(eventFromDb)); };
-  const loadAll = async () => { setDataLoading(true); await Promise.all([fetchProfiles(), fetchSubcontractors(), fetchCustomers(), fetchJobs(), fetchEvents()]); setDataLoading(false); };
+  const fetchReminders = async () => { const { data } = await supabase.from("reminders").select("*").order("due_date"); setReminders((data || []).map(reminderFromDb)); };
+  const loadAll = async () => { setDataLoading((d) => d && true); await Promise.all([fetchProfiles(), fetchSubcontractors(), fetchCustomers(), fetchJobs(), fetchEvents(), fetchReminders()]); setDataLoading(false); };
 
   useEffect(() => {
     if (!profile) return;
@@ -296,7 +310,13 @@ export default function App() {
   const jobById = useMemo(() => Object.fromEntries(jobs.map((j) => [j.id, j])), [jobs]);
   const customerById = useMemo(() => Object.fromEntries(customers.map((c) => [c.id, c])), [customers]);
 
-  const visibleTechs = activeTechs ?? profiles.map((u) => u.id);
+  const me = useMemo(() => profiles.find((p) => p.id === profile?.id) || profile, [profiles, profile]);
+  const isAdmin = !!me?.is_admin;
+  const officeAdmin = profiles.find((p) => p.is_admin) || null;
+  const noAdminsYet = !officeAdmin;
+  const showOffice = isAdmin || noAdminsYet;
+
+  const visibleTechs = activeTechs ?? assignees.map((u) => u.id);
   const eventsByDay = useMemo(() => {
     const map = {};
     for (const ev of events) {
@@ -307,13 +327,18 @@ export default function App() {
     return map;
   }, [events, visibleTechs]);
 
-  const signOut = async () => { await supabase.auth.signOut(); setView("diary"); };
+  const signOut = async () => { await supabase.auth.signOut(); setView("today"); };
 
   // ---- team management ----
   const updateProfile = async (id, patch) => {
     setSaveState("saving");
     const { error } = await supabase.from("profiles").update(patch).eq("id", id);
     if (error) { console.error(error); setSaveState("error"); return; }
+    if (patch.is_admin) {
+      // hand any waiting, unassigned office tasks to the new office admin
+      await supabase.from("events").update({ assigned_to: id }).like("kind", "office%").is("assigned_to", null).is("outcome", null);
+      await fetchEvents();
+    }
     await fetchProfiles();
     setSaveState("saved");
   };
@@ -482,13 +507,91 @@ export default function App() {
     await fetchEvents();
     setSaveState("saved");
   };
-  const setEventOutcome = async (eventId, outcome, note, linkJobId) => {
+  // ---- reminders ----
+  const addReminder = async (r) => {
+    setSaveState("saving");
+    const { error } = await supabase.from("reminders").insert({ customer_id: r.customerId || null, job_id: r.jobId || null, customer: r.customer || null, address: r.address || null, phone: r.phone || null, kind: r.kind, due_date: r.dueDate, notes: r.notes || null });
+    if (error) { console.error(error); setSaveState("error"); return; }
+    await fetchReminders();
+    setSaveState("saved");
+  };
+  const updateReminder = async (id, patch) => {
+    setSaveState("saving");
+    const { error } = await supabase.from("reminders").update(patch).eq("id", id);
+    if (error) { console.error(error); setSaveState("error"); return; }
+    await fetchReminders();
+    setSaveState("saved");
+  };
+  const removeReminder = async (id) => {
+    setSaveState("saving");
+    const { error } = await supabase.from("reminders").delete().eq("id", id);
+    if (error) { console.error(error); setSaveState("error"); return; }
+    await fetchReminders();
+    setSaveState("saved");
+  };
+
+  // ---- office tasks: land on the office admin's diary on the coming Friday ----
+  const createOfficeTask = async (kind, job, details) => {
+    const { data: existing } = await supabase.from("events").select("id").eq("job_id", job.id).eq("kind", kind).is("outcome", null).limit(1);
+    if (existing && existing.length) return;
+    const label = kind === "office_invoice" ? "Send invoice" : "Price & send quote";
+    const { error } = await supabase.from("events").insert(toDbEvent({
+      kind, title: `${label} — ${job.number} · ${job.customer}`, date: nextFridayKey(), time: "", duration: "",
+      assignedTo: officeAdmin?.id || null, jobId: job.id, notes: details.request || "", details,
+    }));
+    if (error) console.error(error);
+  };
+
+  const setEventOutcome = async (eventId, p) => {
     const ev = events.find((e) => e.id === eventId);
-    const jobId = ev?.jobId || linkJobId || null;
-    await updateEvent(eventId, { outcome, outcomeNote: note, ...(jobId && !ev?.jobId ? { jobId } : {}) });
-    if (jobId) {
-      await addJobNote(jobId, `${outcome === "completed" ? "Visit completed" : "Visit couldn't go ahead"} — ${ev?.title || "visit"} (${shortDate(ev.date)}): ${note}`, ev.date, { kind: "feedback", outcome, eventId });
+    if (!ev) return;
+    const jobId = ev.jobId || p.linkJobId || null;
+    const job = jobId ? jobsRef.current.find((j) => j.id === jobId) : null;
+    setSaveState("saving");
+
+    let signaturePath = null;
+    if (p.signatureBlob) {
+      const path = `signatures/${eventId}.png`;
+      const { error } = await supabase.storage.from("job-photos").upload(path, p.signatureBlob, { contentType: "image/png", upsert: true });
+      if (error) console.error(error); else signaturePath = path;
     }
+    const patch = { outcome: p.outcome, outcomeNote: p.note, details: p.details || null };
+    if (jobId && !ev.jobId) patch.jobId = jobId;
+    if (signaturePath) { patch.signaturePath = signaturePath; patch.signedName = p.signedName || null; }
+    const { error } = await supabase.from("events").update(toDbEvent(patch)).eq("id", eventId);
+    if (error) { console.error(error); setSaveState("error"); return; }
+
+    if (job) {
+      const d = p.details || {};
+      let text;
+      if (p.outcome === "rejected") text = `Visit couldn't go ahead — ${ev.title} (${shortDate(ev.date)}): ${p.note}`;
+      else if (job.kind === "quote") text = `Quote visit done (${shortDate(ev.date)}): ${p.note}${d.quoteBy === "office" ? " — passed to the office to price and send." : " — engineer is pricing it."}`;
+      else text = `Visit completed (${shortDate(ev.date)}): ${p.note}${d.finished ? `\nJob finished. To invoice: ${d.invoiceNotes}` : ""}${signaturePath ? `\nSigned off by ${p.signedName || "the customer"}.` : ""}`;
+      await addJobNote(job.id, text, ev.date, { kind: "feedback", outcome: p.outcome, eventId });
+
+      if (p.outcome === "completed") {
+        if (job.kind === "job") {
+          if (d.finished) await updateJob(job.id, { status: "complete" });
+          else if (job.status === "confirmed") await updateJob(job.id, { status: "in_progress" });
+        }
+        if (job.kind === "quote" && d.quoteBy === "office") await createOfficeTask("office_quote", job, { request: p.note, fromEngineer: me?.name, fromEventId: ev.id });
+        if (job.kind === "job" && d.finished) await createOfficeTask("office_invoice", job, { request: d.invoiceNotes, fromEngineer: me?.name, fromEventId: ev.id });
+      }
+      if (p.reminder) await addReminder({ ...p.reminder, jobId: job.id, customerId: job.customerId, customer: job.customer, address: job.address, phone: job.phone });
+    }
+    await fetchEvents();
+    setSaveState("saved");
+  };
+
+  const completeOfficeTask = async (ev, { amount, note }) => {
+    const sentLabel = ev.kind === "office_invoice" ? "Invoice sent" : "Quote sent";
+    await updateEvent(ev.id, { outcome: "completed", outcomeNote: note || sentLabel, details: { ...(ev.details || {}), amount: amount ?? null, doneBy: me?.name } });
+    const job = ev.jobId ? jobsRef.current.find((j) => j.id === ev.jobId) : null;
+    if (!job) return;
+    await addJobNote(job.id, `${sentLabel}${amount != null ? ` — ${money(amount)}` : ""}${note ? ` (${note})` : ""}`, toKey(new Date()), { kind: "office" });
+    const fin = job.finance || {};
+    if (ev.kind === "office_invoice") await updateJob(job.id, { status: "invoiced", finance: { ...fin, ...(amount != null ? { invoice: amount } : {}) } });
+    else if (amount != null) await updateJob(job.id, { finance: { ...fin, quoted: amount } });
   };
 
   // ---- photos (Supabase Storage, private bucket "job-photos") ----
@@ -544,11 +647,11 @@ export default function App() {
     <div className="app-shell" style={{ fontFamily: "Inter, sans-serif", color: TOKENS.ink, background: TOKENS.paper, minHeight: "100vh", overflow: "hidden" }}>
       <style>{GLOBAL_CSS}</style>
 
-      <Sidebar view={view} setView={setView} jobs={jobs} events={events} saveState={saveState} currentUser={profile} onSignOut={signOut}
+      <Sidebar view={view} setView={setView} jobs={jobs} events={events} saveState={saveState} currentUser={me} onSignOut={signOut} showOffice={showOffice}
         onQuickJob={() => setJobModal({ mode: "new", kind: "job" })} />
 
       <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
-        <MobileTopBar currentUser={profile} saveState={saveState} onSignOut={signOut} onQuickJob={() => setJobModal({ mode: "new", kind: "job" })} />
+        <MobileTopBar currentUser={me} saveState={saveState} onSignOut={signOut} onQuickJob={() => setJobModal({ mode: "new", kind: "job" })} />
 
         <div className="scrollbar main-content" style={{ flex: 1, overflowY: "auto" }}>
           {view === "diary" && (
@@ -559,7 +662,21 @@ export default function App() {
               onEditEvent={(ev) => setEventModal({ date: ev.date, event: ev })}
               onOpenJob={openJobFromAnywhere}
               onLogWork={(job, date) => setLogWorkModal({ job, date })}
-              onMarkOutcome={(ev, kind) => setOutcomeModal({ event: ev, kind })} />
+              onMarkOutcome={(ev, kind) => (isOfficeKind(ev.kind) ? setOfficeModal({ event: ev }) : setOutcomeModal({ event: ev, kind }))} />
+          )}
+
+          {view === "today" && (
+            <MyDayView me={me} events={events} jobById={jobById} userById={userById} isAdmin={isAdmin}
+              onEdit={(ev) => setEventModal({ date: ev.date, event: ev })} onOpenJob={openJobFromAnywhere}
+              onLogWork={(job, date) => setLogWorkModal({ job, date })} onMarkOutcome={(ev, kind) => (isOfficeKind(ev.kind) ? setOfficeModal({ event: ev }) : setOutcomeModal({ event: ev, kind }))}
+              onNewEvent={(date) => setEventModal({ date })} />
+          )}
+
+          {view === "office" && (
+            <OfficeView events={events} jobs={jobs} reminders={reminders} jobById={jobById} userById={userById} noAdminsYet={noAdminsYet}
+              onEdit={(ev) => setEventModal({ date: ev.date, event: ev })} onOpenJob={openJobFromAnywhere}
+              onMarkOutcome={(ev, kind) => (isOfficeKind(ev.kind) ? setOfficeModal({ event: ev }) : setOutcomeModal({ event: ev, kind }))} onUpdateReminder={updateReminder} onGoTeam={() => setView("team")}
+              onRaiseJob={(r) => setJobModal({ mode: "new", kind: "job", presetCustomer: r.customerId ? customerById[r.customerId] : null, presetNew: { customer: r.customer, address: r.address, phone: r.phone }, presetDescription: `${REMINDER_KINDS[r.kind] || "Service"}${r.notes ? ` — ${r.notes}` : ""}`, presetJobType: "service", reminderId: r.id })} />
           )}
 
           {view === "jobs" && (
@@ -573,7 +690,8 @@ export default function App() {
               checklistOps={{ addChecklistItem, toggleChecklistItem, removeChecklistItem }}
               onOpenCustomer={(id) => { setOpenCustomerId(id); setView("customers"); }}
               onDeleteJob={async (id) => { const ok = await deleteJob(id); if (ok) setOpenJobId(null); }}
-              currentUser={profile} onUpdateSafety={updateJobSafety} onPrintSafety={(id) => setPrintJobId(id)} onUpdateFinance={updateJobFinance} />
+              currentUser={me} onUpdateSafety={updateJobSafety} onPrintSafety={(id) => setPrintJobId(id)} onUpdateFinance={updateJobFinance}
+              reminderOps={{ reminders, addReminder, updateReminder, removeReminder }} />
           )}
 
           {view === "customers" && (
@@ -592,12 +710,12 @@ export default function App() {
           )}
         </div>
 
-        <MobileTabBar view={view} setView={setView} />
+        <MobileTabBar view={view} setView={setView} showOffice={showOffice} onMore={() => setMoreOpen(true)} />
       </div>
 
       {jobModal && (
         <JobModal modal={jobModal} users={assignees} customers={customers} currentUserId={profile.id} onClose={() => setJobModal(null)}
-          onCreate={async (form) => { const { jobId } = await createJob(form); setJobModal(null); if (jobId) { setOpenJobId(jobId); setView("jobs"); } }} />
+          onCreate={async (form) => { const { jobId } = await createJob(form); const rid = jobModal.reminderId; setJobModal(null); if (jobId) { if (rid) await updateReminder(rid, { done: true }); setOpenJobId(jobId); setView("jobs"); } }} />
       )}
 
       {eventModal && (
@@ -613,13 +731,26 @@ export default function App() {
       )}
 
       {outcomeModal && (
-        <OutcomeModal modal={outcomeModal} jobs={jobs} onClose={() => setOutcomeModal(null)}
-          onSave={async (id, outcome, note, linkJobId) => { await setEventOutcome(id, outcome, note, linkJobId); setOutcomeModal(null); }}
+        <OutcomeModal modal={outcomeModal} jobs={jobs} officeAdminName={officeAdmin?.name} onClose={() => setOutcomeModal(null)}
+          onSave={async (id, payload) => { await setEventOutcome(id, payload); setOutcomeModal(null); }}
           onRebook={(ev) => { setOutcomeModal(null); setEventModal({ date: toKey(new Date()), event: null, presetJob: jobById[ev.jobId] }); }} />
+      )}
+      {officeModal && (
+        <OfficeDoneModal modal={officeModal} job={officeModal.event.jobId ? jobById[officeModal.event.jobId] : null} onClose={() => setOfficeModal(null)}
+          onSave={async (ev, vals) => { await completeOfficeTask(ev, vals); setOfficeModal(null); }} />
+      )}
+
+      {moreOpen && (
+        <MoreSheet items={mobileNav(showOffice).more.map((id) => NAV_ALL[id])} view={view} setView={setView} onClose={() => setMoreOpen(false)} />
       )}
     </div>
   );
 }
+
+const mobileNav = (showOffice) => {
+  const primary = showOffice ? ["today", "diary", "jobs", "office"] : ["today", "diary", "jobs", "customers"];
+  return { primary, more: navIds(showOffice).filter((id) => !primary.includes(id)) };
+};
 
 function CentredMessage({ children }) {
   return (
@@ -725,20 +856,20 @@ function ProfileSetup({ session, onDone, onSignOut }) {
 }
 
 /* ================= DESKTOP SIDEBAR ================= */
-function Sidebar({ view, setView, jobs, events, saveState, currentUser, onSignOut, onQuickJob }) {
+function Sidebar({ view, setView, jobs, events, saveState, currentUser, onSignOut, onQuickJob, showOffice }) {
   const openQuotes = jobs.filter((j) => j.kind === "quote" && j.status === "quote").length;
   const inProgress = jobs.filter((j) => j.status === "in_progress").length;
   const readyToInvoice = jobs.filter((j) => j.status === "complete").length;
   const todayKey = toKey(new Date());
   const todayCount = events.filter((e) => e.date === todayKey).length;
 
-  const items = [
-    { id: "diary", label: "Diary", sub: `${todayCount} today` },
-    { id: "jobs", label: "Jobs & Quotes", sub: `${inProgress} active` },
-    { id: "customers", label: "Customers", sub: null },
-    { id: "reports", label: "Reports", sub: null },
-    { id: "team", label: "Team", sub: null },
-  ];
+  const myToday = events.filter((e) => e.date === todayKey && e.assignedTo === currentUser?.id && !e.outcome).length;
+  const officeOpen = events.filter((e) => isOfficeKind(e.kind) && !e.outcome).length;
+  const subs = {
+    today: `${myToday} left today`, diary: `${todayCount} today`, jobs: `${inProgress} active`,
+    office: officeOpen ? `${officeOpen} to send` : "All sent",
+  };
+  const items = navIds(showOffice).map((id) => ({ id, label: id === "jobs" ? "Jobs & Quotes" : NAV_ALL[id].label, sub: subs[id] || null }));
 
   return (
     <div className="sidebar-desktop" style={{ width: 210, background: TOKENS.ink, color: "#EDEFEA", flexDirection: "column", padding: "20px 0", flexShrink: 0 }}>
@@ -802,18 +933,18 @@ function MobileTopBar({ currentUser, saveState, onSignOut, onQuickJob }) {
   );
 }
 
-function MobileTabBar({ view, setView }) {
+function MobileTabBar({ view, setView, showOffice, onMore }) {
+  const { primary, more } = mobileNav(showOffice);
+  const tab = (id, label, Icon, active, onClick) => (
+    <button key={id} onClick={onClick} style={{ flex: 1, background: "none", border: "none", display: "flex", flexDirection: "column", alignItems: "center", gap: 3, padding: "9px 4px 8px", color: active ? "white" : "#8A93A0" }}>
+      <Icon size={20} color={active ? TOKENS.accent : "#8A93A0"} strokeWidth={active ? 2.3 : 2} />
+      <span style={{ fontSize: 10.5, fontWeight: 600 }}>{label}</span>
+    </button>
+  );
   return (
     <div className="mobile-tabbar">
-      {NAV_ITEMS.map((it) => {
-        const active = view === it.id;
-        return (
-          <button key={it.id} onClick={() => setView(it.id)} style={{ flex: 1, background: "none", border: "none", display: "flex", flexDirection: "column", alignItems: "center", gap: 3, padding: "9px 4px 8px", color: active ? "white" : "#8A93A0" }}>
-            <it.Icon size={19} color={active ? TOKENS.accent : "#8A93A0"} strokeWidth={active ? 2.3 : 2} />
-            <span style={{ fontSize: 10.5, fontWeight: 600 }}>{it.label}</span>
-          </button>
-        );
-      })}
+      {primary.map((id) => tab(id, NAV_ALL[id].label, NAV_ALL[id].Icon, view === id, () => setView(id)))}
+      {tab("more", "More", MoreHorizontal, more.includes(view), onMore)}
     </div>
   );
 }
@@ -920,7 +1051,7 @@ function DiaryView({ cursor, setCursor, today, selectedDay, setSelectedDay, even
                 )}
                 {evs.length > 0 && (
                   <div style={{ display: "flex", gap: 2, flexWrap: "wrap" }}>
-                    {evs.slice(0, 4).map((ev) => <span key={ev.id} style={{ width: 6, height: 6, borderRadius: "50%", background: ev.outcome === "completed" ? TOKENS.green : ev.outcome === "rejected" ? TOKENS.red : (userById[ev.assignedTo]?.colour) || TOKENS.slate, display: "inline-block" }} />)}
+                    {evs.slice(0, 4).map((ev) => <span key={ev.id} style={{ width: 6, height: 6, borderRadius: "50%", background: ev.outcome === "completed" ? TOKENS.green : ev.outcome === "rejected" ? TOKENS.red : isOfficeKind(ev.kind) ? TOKENS.amber : (userById[ev.assignedTo]?.colour) || TOKENS.slate, display: "inline-block" }} />)}
                   </div>
                 )}
               </button>
@@ -935,47 +1066,10 @@ function DiaryView({ cursor, setCursor, today, selectedDay, setSelectedDay, even
           <div style={{ fontSize: 12, color: TOKENS.slateLight, marginBottom: 14 }}>{dayEvents.length} booking{dayEvents.length !== 1 ? "s" : ""}</div>
           {dayEvents.length === 0 && <div style={{ fontSize: 13, color: TOKENS.slateLight, padding: "14px 0" }}>Nothing booked. Add a visit, callback or site survey.</div>}
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            {dayEvents.map((ev) => {
-              const u = userById[ev.assignedTo];
-              const job = ev.jobId ? jobById[ev.jobId] : null;
-              return (
-                <div key={ev.id} style={{ border: `1px solid ${TOKENS.line}`, borderLeft: `3px solid ${ev.outcome === "rejected" ? TOKENS.red : ev.outcome === "completed" ? TOKENS.green : u?.colour || TOKENS.slate}`, borderRadius: 7, padding: "8px 10px" }}>
-                  <div onClick={() => onEditEvent(ev)} style={{ cursor: "pointer" }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 13, fontWeight: 700 }}>
-                      <span>{ev.title}</span>
-                      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                        {ev.outcome === "completed" && <CheckCircle2 size={16} color={TOKENS.green} />}
-                        {ev.outcome === "rejected" && <XCircle size={16} color={TOKENS.red} />}
-                        <span className="ticket" style={{ fontSize: 11.5, color: TOKENS.slate, fontWeight: 400 }}>{ev.time || "—"}</span>
-                      </div>
-                    </div>
-                    <div style={{ fontSize: 11.5, color: TOKENS.slate, marginTop: 2 }}>{u?.name || "Unassigned"}{ev.duration ? ` · ${ev.duration}` : ""}</div>
-                    {ev.outcome && ev.outcomeNote && (
-                      <div style={{ fontSize: 11, color: ev.outcome === "completed" ? TOKENS.green : TOKENS.red, marginTop: 4, fontStyle: "italic" }}>
-                        {ev.outcome === "completed" ? "Completed: " : "Rejected: "}{ev.outcomeNote}
-                      </div>
-                    )}
-                  </div>
-                  {job && (
-                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 6, gap: 6, flexWrap: "wrap" }}>
-                      <span className="ticket" onClick={() => onOpenJob(job.id)} style={{ cursor: "pointer", fontSize: 10.5, color: TOKENS.accent, fontWeight: 700 }}>{job.number}{job.projectName ? ` — ${job.projectName}` : ""} · {job.customer}</span>
-                      <button className="btn" onClick={() => onLogWork(job, ev.date)} style={{ fontSize: 11, padding: "5px 10px", minHeight: "auto" }}>Log work</button>
-                    </div>
-                  )}
-                  {job?.address && <div style={{ marginTop: 8 }}><AddressLinks address={job.address} phone={job.phone} compact /></div>}
-                  {!ev.outcome && (
-                    <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
-                      <button onClick={() => onMarkOutcome(ev, "completed")} style={{ flex: 1, minHeight: 48, borderRadius: 9, border: `2px solid ${TOKENS.green}`, background: `${TOKENS.green}12`, color: TOKENS.green, fontWeight: 700, fontSize: 14, display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
-                        <Check size={22} strokeWidth={3} /> Done
-                      </button>
-                      <button onClick={() => onMarkOutcome(ev, "rejected")} style={{ flex: 1, minHeight: 48, borderRadius: 9, border: `2px solid ${TOKENS.red}`, background: `${TOKENS.red}10`, color: TOKENS.red, fontWeight: 700, fontSize: 14, display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
-                        <X size={22} strokeWidth={3} /> Not done
-                      </button>
-                    </div>
-                  )}
-                </div>
-              );
-            })}
+            {dayEvents.map((ev) => (
+              <VisitCard key={ev.id} ev={ev} job={ev.jobId ? jobById[ev.jobId] : null} user={userById[ev.assignedTo]}
+                onEdit={onEditEvent} onOpenJob={onOpenJob} onLogWork={onLogWork} onMarkOutcome={onMarkOutcome} />
+            ))}
           </div>
           <button className="btn btn-primary" style={{ width: "100%", marginTop: 14 }} onClick={() => onNewEvent(selectedDay)}>+ Book on this day</button>
         </div>
@@ -985,7 +1079,7 @@ function DiaryView({ cursor, setCursor, today, selectedDay, setSelectedDay, even
 }
 
 /* ================= JOBS ================= */
-function JobsView({ jobs, users, userById, customerById, jobFilter, setJobFilter, jobSearch, setJobSearch, openJobId, setOpenJobId, onNewJob, onAddNote, onUpdateJob, onConvert, onBookVisit, events, images, loadImages, addImages, removeImage, checklistOps, onOpenCustomer, currentUser, onUpdateSafety, onPrintSafety, onDeleteJob, onUpdateFinance }) {
+function JobsView({ jobs, users, userById, customerById, jobFilter, setJobFilter, jobSearch, setJobSearch, openJobId, setOpenJobId, onNewJob, onAddNote, onUpdateJob, onConvert, onBookVisit, events, images, loadImages, addImages, removeImage, checklistOps, onOpenCustomer, currentUser, onUpdateSafety, onPrintSafety, onDeleteJob, onUpdateFinance, reminderOps }) {
   const filtered = jobs.filter((j) => {
     if (jobFilter === "open" && ["complete", "invoiced"].includes(j.status)) return false;
     if (jobFilter === "quote" && j.kind !== "quote") return false;
@@ -1007,7 +1101,7 @@ function JobsView({ jobs, users, userById, customerById, jobFilter, setJobFilter
         onAddNote={onAddNote} onUpdateJob={onUpdateJob} onConvert={onConvert} onBookVisit={onBookVisit}
         images={images[openJob.id]} loadImages={loadImages} addImages={addImages} removeImage={removeImage}
         checklistOps={checklistOps} onOpenCustomer={onOpenCustomer}
-        currentUser={currentUser} onUpdateSafety={onUpdateSafety} onPrintSafety={onPrintSafety} onDeleteJob={onDeleteJob} onUpdateFinance={onUpdateFinance} />
+        currentUser={currentUser} onUpdateSafety={onUpdateSafety} onPrintSafety={onPrintSafety} onDeleteJob={onDeleteJob} onUpdateFinance={onUpdateFinance} reminderOps={reminderOps} />
     );
   }
 
@@ -1133,7 +1227,7 @@ function FinancePanel({ job, onUpdateFinance }) {
   );
 }
 
-function JobDetail({ job, users, userById, customer, events, onBack, onAddNote, onUpdateJob, onConvert, onBookVisit, images, loadImages, addImages, removeImage, checklistOps, onOpenCustomer, currentUser, onUpdateSafety, onPrintSafety, onDeleteJob, onUpdateFinance }) {
+function JobDetail({ job, users, userById, customer, events, onBack, onAddNote, onUpdateJob, onConvert, onBookVisit, images, loadImages, addImages, removeImage, checklistOps, onOpenCustomer, currentUser, onUpdateSafety, onPrintSafety, onDeleteJob, onUpdateFinance, reminderOps }) {
   const [note, setNote] = useState("");
   const [noteDate, setNoteDate] = useState(toKey(new Date()));
   const [checklistText, setChecklistText] = useState("");
@@ -1226,6 +1320,8 @@ function JobDetail({ job, users, userById, customer, events, onBack, onAddNote, 
         </div>
       </div>
 
+      <ReminderPanel job={job} reminders={reminderOps.reminders} onAdd={reminderOps.addReminder} onUpdate={reminderOps.updateReminder} onRemove={reminderOps.removeReminder} />
+
       <SafetyAccordion job={job} safety={safety} currentUser={currentUser} onUpdateSafety={onUpdateSafety} onPrintSafety={onPrintSafety} />
 
       <div style={{ marginBottom: 22 }}>
@@ -1255,10 +1351,13 @@ function JobDetail({ job, users, userById, customer, events, onBack, onAddNote, 
                 <div key={ev.id} style={{ background: "white", border: `1px solid ${TOKENS.line}`, borderLeft: `3px solid ${c}`, borderRadius: 7, padding: "8px 10px" }}>
                   <div style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 12.5 }}>
                     <span style={{ fontWeight: 700 }}>{shortDate(ev.date)}{ev.time ? ` · ${ev.time}` : ""} — {ev.title}</span>
-                    <span style={{ fontSize: 11, fontWeight: 700, color: ev.outcome ? c : TOKENS.slateLight, whiteSpace: "nowrap" }}>{ev.outcome === "completed" ? "Done" : ev.outcome === "rejected" ? "Not done" : "Booked"}</span>
+                    <span style={{ fontSize: 11, fontWeight: 700, color: ev.outcome ? c : isOfficeKind(ev.kind) ? TOKENS.amber : TOKENS.slateLight, whiteSpace: "nowrap" }}>{isOfficeKind(ev.kind) ? (ev.outcome ? "Sent" : "Office to do") : ev.outcome === "completed" ? "Done" : ev.outcome === "rejected" ? "Not done" : "Booked"}</span>
                   </div>
                   <div style={{ fontSize: 11.5, color: TOKENS.slate, marginTop: 2 }}>{userById[ev.assignedTo]?.name || "Unassigned"}</div>
-                  {ev.outcomeNote && <div style={{ fontSize: 13, marginTop: 4 }}>{ev.outcomeNote}</div>}
+                  {ev.outcomeNote && <div style={{ fontSize: 13, marginTop: 4, whiteSpace: "pre-wrap" }}>{ev.outcomeNote}</div>}
+                  {ev.details?.finished && ev.details?.invoiceNotes && <div style={{ fontSize: 12.5, marginTop: 4, color: TOKENS.green }}><strong>To invoice:</strong> {ev.details.invoiceNotes}</div>}
+                  {ev.details?.quoteBy && <div style={{ fontSize: 12, marginTop: 4, color: TOKENS.slate }}>{ev.details.quoteBy === "office" ? "Office to price & send" : "Engineer pricing it"}</div>}
+                  {ev.signaturePath && <SignatureThumb path={ev.signaturePath} name={ev.signedName} />}
                 </div>
               );
             })}
@@ -1271,8 +1370,8 @@ function JobDetail({ job, users, userById, customer, events, onBack, onAddNote, 
         {job.notes.length === 0 && <div style={{ fontSize: 13, color: TOKENS.slateLight }}>No notes yet — log what's completed each day here.</div>}
         {job.notes.slice().reverse().map((n) => (
           <div key={n.id} style={{ background: "white", border: `1px solid ${TOKENS.line}`, borderRadius: 7, padding: "8px 10px" }}>
-            <div style={{ fontSize: 10.5, color: TOKENS.slateLight, marginBottom: 3, fontWeight: 600 }}>{n.date ? shortDate(n.date) : new Date(n.ts).toLocaleDateString("en-GB")}{n.author ? ` · ${n.author}` : ""}{n.kind === "feedback" && <span style={{ marginLeft: 6, color: n.outcome === "rejected" ? TOKENS.red : TOKENS.green }}>DIARY FEEDBACK</span>}</div>
-            <div style={{ fontSize: 13 }}>{n.text}</div>
+            <div style={{ fontSize: 10.5, color: TOKENS.slateLight, marginBottom: 3, fontWeight: 600 }}>{n.date ? shortDate(n.date) : new Date(n.ts).toLocaleDateString("en-GB")}{n.author ? ` · ${n.author}` : ""}{n.kind === "office" && <span style={{ marginLeft: 6, color: TOKENS.amber }}>OFFICE</span>}{n.kind === "feedback" && <span style={{ marginLeft: 6, color: n.outcome === "rejected" ? TOKENS.red : TOKENS.green }}>DIARY FEEDBACK</span>}</div>
+            <div style={{ fontSize: 13, whiteSpace: "pre-wrap" }}>{n.text}</div>
           </div>
         ))}
       </div>
@@ -1525,6 +1624,10 @@ function ProfileRow({ user, jobs, currentUserId, onUpdate, onRemove }) {
           <div style={{ fontSize: 12, color: TOKENS.slate }}>{user.trade || "Technician"} · {active} active job{active !== 1 ? "s" : ""}</div>
         )}
       </div>
+      <label style={{ display: "flex", alignItems: "center", gap: 6, margin: 0, cursor: "pointer", textTransform: "none", letterSpacing: 0, fontSize: 12.5, color: user.is_admin ? TOKENS.amber : TOKENS.slate }}>
+        <input type="checkbox" checked={!!user.is_admin} onChange={() => onUpdate(user.id, { is_admin: !user.is_admin })} style={{ width: 20, height: 20, accentColor: TOKENS.amber }} />
+        Office admin
+      </label>
       {!editing && <button className="btn-ghost" onClick={() => setEditing(true)}>Edit role</button>}
       <button className="btn-ghost" style={{ color: TOKENS.red }} onClick={() => { if (window.confirm(`Remove ${user.name} from the team? They'll need to set up their profile again if they sign back in.`)) onRemove(user.id); }}>Remove</button>
     </div>
@@ -1568,7 +1671,7 @@ function TeamView({ profiles, subcontractors, jobs, currentUserId, onUpdateProfi
   return (
     <div style={{ maxWidth: 600 }}>
       <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontWeight: 700, fontSize: 22, marginBottom: 6 }}>Team</div>
-      <div style={{ fontSize: 12.5, color: TOKENS.slateLight, marginBottom: 14 }}>Anyone who's created an account shows up here automatically — share the app link with new team members and they can sign themselves up. Roles can be edited by anyone on the team.</div>
+      <div style={{ fontSize: 12.5, color: TOKENS.slateLight, marginBottom: 14 }}>Anyone who's created an account shows up here automatically — share the app link with new team members and they can sign themselves up. Roles can be edited by anyone on the team. Tick <strong>Office admin</strong> for whoever does the invoicing and quotes — finished jobs and office-priced quotes go onto their diary for the coming Friday, and they get the Office page.</div>
       <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 24 }}>
         {profiles.map((u) => (
           <ProfileRow key={u.id} user={u} jobs={jobs} currentUserId={currentUserId} onUpdate={onUpdateProfile} onRemove={onRemoveProfile} />
@@ -1688,14 +1791,15 @@ function ModalShell({ title, onClose, children }) {
 function JobModal({ modal, users, customers, currentUserId, onClose, onCreate }) {
   const preset = modal.presetCustomer;
   const [kind, setKind] = useState(modal.kind || "job");
-  const [customerMode, setCustomerMode] = useState(preset ? "existing" : (customers.length ? "existing" : "new"));
+  const presetNew = !preset && modal.presetNew?.customer ? modal.presetNew : null;
+  const [customerMode, setCustomerMode] = useState(preset ? "existing" : presetNew ? "new" : (customers.length ? "existing" : "new"));
   const [selectedCustomerId, setSelectedCustomerId] = useState(preset?.id || "");
-  const [customer, setCustomer] = useState("");
-  const [address, setAddress] = useState("");
-  const [phone, setPhone] = useState("");
-  const [description, setDescription] = useState("");
+  const [customer, setCustomer] = useState(presetNew?.customer || "");
+  const [address, setAddress] = useState(presetNew?.address || "");
+  const [phone, setPhone] = useState(presetNew?.phone || "");
+  const [description, setDescription] = useState(modal.presetDescription || "");
   const [assignedTo, setAssignedTo] = useState(currentUserId || "");
-  const [jobType, setJobType] = useState("service");
+  const [jobType, setJobType] = useState(modal.presetJobType || "service");
   const [priority, setPriority] = useState("normal");
   const [department, setDepartment] = useState("plumbing");
   const [projectName, setProjectName] = useState("");
@@ -1877,42 +1981,486 @@ function LogWorkModal({ modal, onClose, onSave }) {
   );
 }
 
-function OutcomeModal({ modal, jobs, onClose, onSave, onRebook }) {
+function OutcomeModal({ modal, jobs, officeAdminName, onClose, onSave, onRebook }) {
   const { event, kind } = modal;
   const isReject = kind === "rejected";
   const [text, setText] = useState(event.outcomeNote || "");
   const [linkJobId, setLinkJobId] = useState("");
-  const linkedJob = event.jobId ? jobs.find((j) => j.id === event.jobId) : null;
+  const job = jobs.find((j) => j.id === (event.jobId || linkJobId)) || null;
+  const isQuote = job?.kind === "quote";
+  const [finished, setFinished] = useState(null);
+  const [invoiceNotes, setInvoiceNotes] = useState("");
+  const [quoteBy, setQuoteBy] = useState("office");
+  const [wantSig, setWantSig] = useState(false);
+  const [hasInk, setHasInk] = useState(false);
+  const [signedName, setSignedName] = useState("");
+  const [reminderKind, setReminderKind] = useState("");
+  const [reminderDate, setReminderDate] = useState(addMonthsKey(event.date, 12));
+  const [busy, setBusy] = useState(false);
+  const sigRef = useRef(null);
+  const office = officeAdminName ? officeAdminName.split(" ")[0] : "the office";
+  const Office = office.charAt(0).toUpperCase() + office.slice(1);
+
+  const needFinished = !isReject && job && !isQuote;
+  const canSave = !busy && text.trim() && (!needFinished || finished !== null) && !(needFinished && finished && !invoiceNotes.trim());
+
+  const save = async () => {
+    setBusy(true);
+    const signatureBlob = wantSig && hasInk && sigRef.current ? await sigRef.current.toBlob() : null;
+    await onSave(event.id, {
+      outcome: kind, note: text.trim(), linkJobId: linkJobId || null,
+      details: isReject || !job ? null : isQuote ? { quoteBy } : { finished, invoiceNotes: invoiceNotes.trim() },
+      signatureBlob, signedName: signedName.trim(),
+      reminder: !isReject && reminderKind ? { kind: reminderKind, dueDate: reminderDate } : null,
+    });
+  };
+
+  const title = isReject ? "Visit not done" : isQuote ? "Quote visit done" : "Visit done";
+  const label = isReject ? "Why couldn't it go ahead?" : isQuote ? "What needs quoting?" : "What was done?";
+  const placeholder = isReject ? "e.g. Customer not in, access blocked, part unavailable…" : isQuote ? "Work required, materials, sizes / measurements, access, anything the customer asked for…" : "e.g. Replaced pump, tested and working";
+
   return (
-    <ModalShell title={isReject ? "Reject this visit" : "Mark visit complete"} onClose={onClose}>
-      <div style={{ marginBottom: 10 }}>
+    <ModalShell title={title} onClose={onClose}>
+      <div style={{ marginBottom: 12 }}>
         <div style={{ fontSize: 15, fontWeight: 700 }}>{event.title}</div>
-        <div style={{ fontSize: 12.5, color: TOKENS.slateLight }}>{shortDate(event.date)}</div>
+        <div style={{ fontSize: 12.5, color: TOKENS.slateLight }}>{shortDate(event.date)}{job ? ` · ${job.number} · ${job.customer}` : ""}</div>
       </div>
-      <div className="field">
-        <label>{isReject ? "Reason it couldn't be done" : "Feedback — what was done"}</label>
-        <textarea rows={4} autoFocus value={text} onChange={(e) => setText(e.target.value)} placeholder={isReject ? "e.g. Customer not in, access blocked, part unavailable…" : "e.g. Boiler serviced, tested and working"} />
-      </div>
-      {linkedJob ? (
-        <div style={{ fontSize: 12, color: TOKENS.slateLight, marginBottom: 10 }}>This feedback will be saved to job <span className="ticket" style={{ color: TOKENS.accent, fontWeight: 700 }}>{linkedJob.number}</span> · {linkedJob.customer}.</div>
-      ) : (
+
+      {!event.jobId && (
         <div className="field">
-          <label>Save feedback to job</label>
-          <select value={linkJobId} onChange={(e) => setLinkJobId(e.target.value)}>
+          <label>Which job is this for?</label>
+          <select value={linkJobId} onChange={(e) => { setLinkJobId(e.target.value); setFinished(null); }}>
             <option value="">— Not linked to a job —</option>
             {jobs.filter((j) => j.status !== "invoiced").map((j) => <option key={j.id} value={j.id}>{j.number} · {j.customer}{j.address ? `, ${j.address}` : ""}</option>)}
           </select>
         </div>
       )}
-      {isReject && (
-        <div style={{ fontSize: 12, color: TOKENS.slateLight, marginBottom: 10 }}>You can book another visit for this job straight after saving.</div>
+
+      <div className="field">
+        <label>{label}</label>
+        <textarea rows={4} autoFocus value={text} onChange={(e) => setText(e.target.value)} placeholder={placeholder} />
+      </div>
+
+      {!isReject && isQuote && (
+        <div className="field">
+          <label>Who's pricing it?</label>
+          <ChoiceButtons value={quoteBy} onChange={setQuoteBy} options={[["office", `${Office} — simple quote`, TOKENS.amber], ["engineer", "I'll price it myself"]]} />
+          {quoteBy === "office" && <div style={{ fontSize: 12, color: TOKENS.slateLight, marginTop: 6 }}>Goes on {office}'s diary for Friday to price and send.</div>}
+        </div>
       )}
+
+      {needFinished && (
+        <div className="field">
+          <label>Is the job finished?</label>
+          <ChoiceButtons value={finished} onChange={setFinished} options={[[true, "Yes — ready to invoice", TOKENS.green], [false, "No — more work needed", TOKENS.accent2]]} />
+        </div>
+      )}
+
+      {needFinished && finished && (
+        <>
+          <div className="field">
+            <label>What needs invoicing?</label>
+            <textarea rows={3} value={invoiceNotes} onChange={(e) => setInvoiceNotes(e.target.value)} placeholder="Materials used, hours on site, extras agreed with the customer, anything not to charge…" />
+            <div style={{ fontSize: 12, color: TOKENS.slateLight, marginTop: 4 }}>Goes on {office}'s diary for Friday to invoice.</div>
+          </div>
+
+          <div className="field">
+            <label>Next service / certificate reminder (optional)</label>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <select value={reminderKind} onChange={(e) => setReminderKind(e.target.value)} style={{ flex: "1 1 170px" }}>
+                <option value="">No reminder</option>
+                {Object.entries(REMINDER_KINDS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+              </select>
+              {reminderKind && <input type="date" value={reminderDate} onChange={(e) => setReminderDate(e.target.value)} style={{ flex: "1 1 140px" }} />}
+            </div>
+          </div>
+        </>
+      )}
+
+      {!isReject && job && !isQuote && (
+        <div className="field">
+          {!wantSig ? (
+            <button type="button" className="btn" onClick={() => setWantSig(true)} style={{ width: "100%" }}>+ Get customer to sign (optional)</button>
+          ) : (
+            <>
+              <label>Customer signature</label>
+              <SignaturePad ref={sigRef} onInk={setHasInk} />
+              <input value={signedName} onChange={(e) => setSignedName(e.target.value)} placeholder="Customer's name" style={{ marginTop: 6 }} />
+            </>
+          )}
+        </div>
+      )}
+
+      {isReject && <div style={{ fontSize: 12, color: TOKENS.slateLight, marginBottom: 10 }}>You can book another visit for this job straight after saving.</div>}
+
       <div style={{ display: "flex", gap: 8 }}>
         {isReject && event.jobId && <button className="btn" onClick={() => onRebook(event)}>Book another visit</button>}
-        <button className="btn btn-primary" style={{ flex: 1 }} disabled={!text.trim()} onClick={() => onSave(event.id, kind, text.trim(), linkJobId || null)}>
-          Save
-        </button>
+        <button className="btn btn-primary" style={{ flex: 1, minHeight: 46 }} disabled={!canSave} onClick={save}>{busy ? "Saving…" : "Save"}</button>
       </div>
     </ModalShell>
+  );
+}
+
+/* ================= SHARED: CHOICE BUTTONS ================= */
+function ChoiceButtons({ options, value, onChange }) {
+  return (
+    <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+      {options.map(([val, label, colour]) => {
+        const on = value === val;
+        const c = colour || TOKENS.ink;
+        return (
+          <button key={String(val)} type="button" onClick={() => onChange(val)}
+            style={{ flex: "1 1 140px", minHeight: 48, borderRadius: 9, border: `2px solid ${on ? c : TOKENS.line}`, background: on ? `${c}14` : "white", color: on ? c : TOKENS.ink, fontWeight: 700, fontSize: 13.5, padding: "8px 10px" }}>
+            {label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/* ================= SIGNATURES ================= */
+const SignaturePad = React.forwardRef(function SignaturePad({ onInk }, ref) {
+  const canvasRef = useRef(null);
+  const drawing = useRef(false);
+  const last = useRef(null);
+
+  useEffect(() => {
+    const c = canvasRef.current;
+    const ratio = window.devicePixelRatio || 1;
+    c.width = c.offsetWidth * ratio;
+    c.height = 160 * ratio;
+    const ctx = c.getContext("2d");
+    ctx.scale(ratio, ratio);
+    ctx.lineWidth = 2.4; ctx.lineCap = "round"; ctx.lineJoin = "round"; ctx.strokeStyle = "#111";
+  }, []);
+
+  const pos = (e) => { const r = canvasRef.current.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; };
+  const down = (e) => { e.preventDefault(); canvasRef.current.setPointerCapture?.(e.pointerId); drawing.current = true; last.current = pos(e); };
+  const move = (e) => {
+    if (!drawing.current) return;
+    e.preventDefault();
+    const p = pos(e);
+    const ctx = canvasRef.current.getContext("2d");
+    ctx.beginPath(); ctx.moveTo(last.current.x, last.current.y); ctx.lineTo(p.x, p.y); ctx.stroke();
+    last.current = p;
+    onInk?.(true);
+  };
+  const up = () => { drawing.current = false; };
+  const clear = () => { const c = canvasRef.current; c.getContext("2d").clearRect(0, 0, c.width, c.height); onInk?.(false); };
+
+  React.useImperativeHandle(ref, () => ({ toBlob: () => new Promise((res) => canvasRef.current.toBlob(res, "image/png")) }));
+
+  return (
+    <div>
+      <canvas ref={canvasRef} onPointerDown={down} onPointerMove={move} onPointerUp={up} onPointerCancel={up}
+        style={{ width: "100%", height: 160, border: `1.5px dashed ${TOKENS.slateLight}`, borderRadius: 8, background: "white", touchAction: "none", display: "block" }} />
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 4 }}>
+        <span style={{ fontSize: 11.5, color: TOKENS.slateLight }}>Customer signs in the box</span>
+        <button type="button" className="btn-ghost" onClick={clear} style={{ fontSize: 12.5, fontWeight: 700 }}>Clear</button>
+      </div>
+    </div>
+  );
+});
+
+function SignatureThumb({ path, name }) {
+  const [url, setUrl] = useState(null);
+  useEffect(() => {
+    let alive = true;
+    supabase.storage.from("job-photos").createSignedUrl(path, 3600).then(({ data }) => { if (alive) setUrl(data?.signedUrl || null); });
+    return () => { alive = false; };
+  }, [path]);
+  return (
+    <div style={{ marginTop: 6 }}>
+      <div style={{ fontSize: 10.5, color: TOKENS.slateLight, fontWeight: 700, textTransform: "uppercase", marginBottom: 3 }}>Customer signature{name ? ` — ${name}` : ""}</div>
+      {url && <img src={url} alt="Customer signature" style={{ maxWidth: 240, width: "100%", height: 70, objectFit: "contain", background: "white", border: `1px solid ${TOKENS.line}`, borderRadius: 6 }} />}
+    </div>
+  );
+}
+
+/* ================= VISIT / OFFICE CARD (diary, My day, office) ================= */
+const isOfficeKind = (k) => typeof k === "string" && k.startsWith("office");
+const OFFICE_LABEL = { office_invoice: "Invoice", office_quote: "Quote" };
+
+function VisitCard({ ev, job, user, onEdit, onOpenJob, onLogWork, onMarkOutcome, showDate }) {
+  const office = isOfficeKind(ev.kind);
+  const edge = ev.outcome === "rejected" ? TOKENS.red : ev.outcome === "completed" ? TOKENS.green : office ? TOKENS.amber : user?.colour || TOKENS.slate;
+  const bigBtn = (colour) => ({ flex: 1, minHeight: 48, borderRadius: 9, border: `2px solid ${colour}`, background: `${colour}12`, color: colour, fontWeight: 700, fontSize: 14, display: "flex", alignItems: "center", justifyContent: "center", gap: 6 });
+
+  return (
+    <div style={{ background: "white", border: `1px solid ${TOKENS.line}`, borderLeft: `4px solid ${edge}`, borderRadius: 8, padding: "10px 12px" }}>
+      <div onClick={() => onEdit?.(ev)} style={{ cursor: onEdit ? "pointer" : "default" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+          <div style={{ minWidth: 0 }}>
+            {office && <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: ".05em", color: TOKENS.amber, marginBottom: 2 }}>OFFICE · {OFFICE_LABEL[ev.kind] || "TASK"}</div>}
+            <div style={{ fontSize: 14, fontWeight: 700 }}>{ev.title}</div>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+            {ev.outcome === "completed" && <CheckCircle2 size={18} color={TOKENS.green} />}
+            {ev.outcome === "rejected" && <XCircle size={18} color={TOKENS.red} />}
+            <span className="ticket" style={{ fontSize: 12, color: TOKENS.slate }}>{showDate ? `${shortDate(ev.date)} ` : ""}{ev.time || ""}</span>
+          </div>
+        </div>
+        <div style={{ fontSize: 12, color: TOKENS.slate, marginTop: 2 }}>{user?.name || "Unassigned"}{ev.duration ? ` · ${ev.duration}` : ""}{office && ev.details?.fromEngineer ? ` · from ${ev.details.fromEngineer}` : ""}</div>
+        {ev.notes && <div style={{ fontSize: 12.5, marginTop: 6, whiteSpace: "pre-wrap", background: office ? `${TOKENS.amber}10` : TOKENS.paper, borderRadius: 6, padding: "6px 8px" }}>{ev.notes}</div>}
+        {ev.outcome && ev.outcomeNote && (
+          <div style={{ fontSize: 12, color: ev.outcome === "completed" ? TOKENS.green : TOKENS.red, marginTop: 6, fontStyle: "italic" }}>
+            {office ? "Sent: " : ev.outcome === "completed" ? "Done: " : "Not done: "}{ev.outcomeNote}
+          </div>
+        )}
+      </div>
+
+      {job && (
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 8, gap: 6, flexWrap: "wrap" }}>
+          <span className="ticket" onClick={() => onOpenJob(job.id)} style={{ cursor: "pointer", fontSize: 11, color: TOKENS.accent, fontWeight: 700 }}>{job.number}{job.projectName ? ` — ${job.projectName}` : ""} · {job.customer}</span>
+          {!office && onLogWork && <button className="btn" onClick={() => onLogWork(job, ev.date)} style={{ fontSize: 11.5, padding: "5px 10px", minHeight: "auto" }}>Log work</button>}
+        </div>
+      )}
+      {!office && job?.address && <div style={{ marginTop: 8 }}><AddressLinks address={job.address} phone={job.phone} compact /></div>}
+
+      {!ev.outcome && (
+        office ? (
+          <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+            <button onClick={() => onMarkOutcome(ev, "completed")} style={bigBtn(TOKENS.green)}><Check size={22} strokeWidth={3} /> Mark sent</button>
+          </div>
+        ) : (
+          <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+            <button onClick={() => onMarkOutcome(ev, "completed")} style={bigBtn(TOKENS.green)}><Check size={22} strokeWidth={3} /> Done</button>
+            <button onClick={() => onMarkOutcome(ev, "rejected")} style={bigBtn(TOKENS.red)}><X size={22} strokeWidth={3} /> Not done</button>
+          </div>
+        )
+      )}
+    </div>
+  );
+}
+
+/* ================= MY DAY ================= */
+function MyDayView({ me, events, jobById, userById, isAdmin, onEdit, onOpenJob, onLogWork, onMarkOutcome, onNewEvent }) {
+  const [day, setDay] = useState("today");
+  const now = new Date();
+  const todayKey = toKey(now);
+  const tomorrowKey = toKey(new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1));
+  const twoWeeksAgo = toKey(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 14));
+  const key = day === "today" ? todayKey : tomorrowKey;
+  const byTime = (a, b) => (a.time || "99").localeCompare(b.time || "99");
+
+  const mine = events.filter((e) => e.assignedTo === me.id);
+  const list = mine.filter((e) => e.date === key).sort(byTime);
+  const unmarked = mine.filter((e) => e.date < todayKey && e.date >= twoWeeksAgo && !e.outcome).sort((a, b) => b.date.localeCompare(a.date));
+  const hour = now.getHours();
+  const greet = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
+  const left = list.filter((e) => !e.outcome).length;
+
+  const card = (ev, showDate) => (
+    <VisitCard key={ev.id} ev={ev} job={ev.jobId ? jobById[ev.jobId] : null} user={userById[ev.assignedTo]} showDate={showDate}
+      onEdit={onEdit} onOpenJob={onOpenJob} onLogWork={onLogWork} onMarkOutcome={onMarkOutcome} />
+  );
+
+  return (
+    <div style={{ maxWidth: 620 }}>
+      <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontWeight: 700, fontSize: 24 }}>{greet}, {me.name.split(" ")[0]}</div>
+      <div style={{ fontSize: 13, color: TOKENS.slate, marginBottom: 14 }}>{dayLabel(now)} · {left} {isAdmin ? "task" : "visit"}{left !== 1 ? "s" : ""} left {day === "today" ? "today" : "tomorrow"}</div>
+
+      <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+        {[["today", "Today"], ["tomorrow", "Tomorrow"]].map(([id, label]) => (
+          <button key={id} className="btn" onClick={() => setDay(id)} style={{ flex: 1, background: day === id ? TOKENS.ink : "white", color: day === id ? "white" : TOKENS.ink, borderColor: day === id ? TOKENS.ink : TOKENS.line }}>{label}</button>
+        ))}
+      </div>
+
+      {unmarked.length > 0 && day === "today" && (
+        <div style={{ marginBottom: 18 }}>
+          <div style={{ fontSize: 11.5, fontWeight: 700, color: TOKENS.red, textTransform: "uppercase", marginBottom: 6 }}>Still to mark ({unmarked.length})</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>{unmarked.map((ev) => card(ev, true))}</div>
+        </div>
+      )}
+
+      {list.length === 0 ? (
+        <div style={{ background: "white", border: `1px solid ${TOKENS.line}`, borderRadius: 9, padding: 18, fontSize: 13.5, color: TOKENS.slateLight, textAlign: "center" }}>
+          Nothing booked for you {day === "today" ? "today" : "tomorrow"}.
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>{list.map((ev) => card(ev, false))}</div>
+      )}
+
+      <button className="btn btn-primary" style={{ width: "100%", marginTop: 14 }} onClick={() => onNewEvent(key)}>+ Book a visit</button>
+    </div>
+  );
+}
+
+/* ================= OFFICE ================= */
+function OfficeView({ events, jobs, reminders, jobById, userById, noAdminsYet, onEdit, onOpenJob, onMarkOutcome, onUpdateReminder, onRaiseJob, onGoTeam }) {
+  const todayKey = toKey(new Date());
+  const now = new Date();
+  const horizon = toKey(new Date(now.getFullYear(), now.getMonth(), now.getDate() + 60));
+  const officeOpen = events.filter((e) => isOfficeKind(e.kind) && !e.outcome).sort((a, b) => a.date.localeCompare(b.date));
+  const officeDone = events.filter((e) => isOfficeKind(e.kind) && e.outcome).sort((a, b) => b.date.localeCompare(a.date)).slice(0, 8);
+  const invoiceTaskJobIds = new Set(officeOpen.filter((e) => e.kind === "office_invoice").map((e) => e.jobId));
+  const readyNoTask = jobs.filter((j) => j.status === "complete" && !invoiceTaskJobIds.has(j.id));
+  const dueReminders = reminders.filter((r) => !r.done && r.dueDate <= horizon).sort((a, b) => a.dueDate.localeCompare(b.dueDate));
+
+  const heading = (text, colour) => <div style={{ fontSize: 11.5, fontWeight: 700, color: colour || TOKENS.slateLight, textTransform: "uppercase", margin: "20px 0 8px" }}>{text}</div>;
+
+  return (
+    <div style={{ maxWidth: 680 }}>
+      <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontWeight: 700, fontSize: 22 }}>Office</div>
+      <div style={{ fontSize: 12.5, color: TOKENS.slateLight }}>Invoices and quotes passed on by the engineers, jobs ready to invoice, and services coming up.</div>
+
+      {noAdminsYet && (
+        <div style={{ marginTop: 12, background: `${TOKENS.amber}14`, border: `1px solid ${TOKENS.amber}55`, borderRadius: 8, padding: "10px 12px", fontSize: 12.5 }}>
+          No office admin is set yet, so these tasks aren't going on anyone's diary. <button className="btn-ghost" onClick={onGoTeam} style={{ padding: 0, fontWeight: 700, color: TOKENS.accent2 }}>Set one in Team →</button>
+        </div>
+      )}
+
+      {heading(`To do (${officeOpen.length})`)}
+      {officeOpen.length === 0 && <div style={{ fontSize: 13, color: TOKENS.slateLight }}>Nothing waiting — all invoices and quotes are sent.</div>}
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {officeOpen.map((ev) => (
+          <div key={ev.id}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: ev.date < todayKey ? TOKENS.red : TOKENS.slate, marginBottom: 3 }}>{ev.date < todayKey ? "Overdue — was due " : "Due "}{shortDate(ev.date)}</div>
+            <VisitCard ev={ev} job={ev.jobId ? jobById[ev.jobId] : null} user={userById[ev.assignedTo]} onEdit={onEdit} onOpenJob={onOpenJob} onMarkOutcome={onMarkOutcome} />
+          </div>
+        ))}
+      </div>
+
+      {readyNoTask.length > 0 && (
+        <>
+          {heading(`Ready to invoice — no task yet (${readyNoTask.length})`, TOKENS.green)}
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {readyNoTask.map((j) => (
+              <div key={j.id} onClick={() => onOpenJob(j.id)} style={{ background: "white", border: `1px solid ${TOKENS.line}`, borderRadius: 8, padding: "10px 12px", cursor: "pointer", display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                <span className="ticket" style={{ fontSize: 12, fontWeight: 700, color: TOKENS.accent }}>{j.number}</span>
+                <span style={{ flex: 1, fontSize: 13.5, fontWeight: 600 }}>{j.customer}</span>
+                <span style={{ fontSize: 12, color: TOKENS.accent2, fontWeight: 700 }}>Open job →</span>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
+      {heading(`Services & certificates due — next 60 days (${dueReminders.length})`)}
+      {dueReminders.length === 0 && <div style={{ fontSize: 13, color: TOKENS.slateLight }}>Nothing due. Reminders are set when an engineer finishes a job, or from a job's page.</div>}
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        {dueReminders.map((r) => {
+          const overdue = r.dueDate < todayKey;
+          return (
+            <div key={r.id} style={{ background: "white", border: `1px solid ${TOKENS.line}`, borderLeft: `4px solid ${overdue ? TOKENS.red : TOKENS.accent2}`, borderRadius: 8, padding: "10px 12px" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
+                <span style={{ fontSize: 13.5, fontWeight: 700 }}>{REMINDER_KINDS[r.kind] || r.kind} — {r.customer}</span>
+                <span style={{ fontSize: 12, fontWeight: 700, color: overdue ? TOKENS.red : TOKENS.slate }}>{overdue ? "Overdue · " : "Due "}{shortDate(r.dueDate)}</span>
+              </div>
+              {r.address && <div style={{ fontSize: 12, color: TOKENS.slate, marginTop: 2 }}>{r.address}{r.phone ? ` · ${r.phone}` : ""}</div>}
+              {r.notes && <div style={{ fontSize: 12.5, marginTop: 4 }}>{r.notes}</div>}
+              <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
+                <button className="btn btn-primary" onClick={() => onRaiseJob(r)}>Raise job</button>
+                {r.phone && <a href={telHref(r.phone)} className="btn" style={{ textDecoration: "none", display: "inline-flex", alignItems: "center", gap: 5 }}><Phone size={14} /> Call</a>}
+                <button className="btn" onClick={() => onUpdateReminder(r.id, { done: true })}>Dismiss</button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {officeDone.length > 0 && (
+        <>
+          {heading("Recently sent")}
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {officeDone.map((ev) => (
+              <div key={ev.id} style={{ fontSize: 12.5, color: TOKENS.slate, background: "white", border: `1px solid ${TOKENS.line}`, borderRadius: 7, padding: "8px 10px" }}>
+                <strong style={{ color: TOKENS.ink }}>{ev.title}</strong> — {ev.outcomeNote}{ev.details?.amount != null ? ` (${money(ev.details.amount)})` : ""}{ev.details?.doneBy ? ` · ${ev.details.doneBy}` : ""}
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function OfficeDoneModal({ modal, job, onClose, onSave }) {
+  const { event } = modal;
+  const isInvoice = event.kind === "office_invoice";
+  const [amount, setAmount] = useState("");
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  return (
+    <ModalShell title={isInvoice ? "Invoice sent" : "Quote sent"} onClose={onClose}>
+      <div style={{ marginBottom: 10 }}>
+        <div style={{ fontSize: 15, fontWeight: 700 }}>{event.title}</div>
+        {job && <div style={{ fontSize: 12.5, color: TOKENS.slateLight }}>{job.address}</div>}
+      </div>
+      {event.notes && (
+        <div style={{ fontSize: 12.5, background: `${TOKENS.amber}10`, borderRadius: 7, padding: "8px 10px", marginBottom: 12, whiteSpace: "pre-wrap" }}>
+          <div style={{ fontSize: 10.5, fontWeight: 700, color: TOKENS.amber, marginBottom: 3 }}>FROM {(event.details?.fromEngineer || "ENGINEER").toUpperCase()}</div>
+          {event.notes}
+        </div>
+      )}
+      <div className="field">
+        <label>{isInvoice ? "Invoice amount (£)" : "Quote amount (£)"} — optional</label>
+        <input type="number" step="0.01" min="0" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0.00" />
+      </div>
+      <div className="field">
+        <label>{isInvoice ? "Invoice number / notes" : "Quote notes"} — optional</label>
+        <input value={note} onChange={(e) => setNote(e.target.value)} placeholder={isInvoice ? "e.g. INV-1042, sent by email" : "e.g. Emailed to customer"} />
+      </div>
+      <div style={{ fontSize: 12, color: TOKENS.slateLight, marginBottom: 10 }}>
+        {isInvoice ? "The job will be marked as invoiced, and the amount goes into its figures for the reports." : "The quote amount is saved to the job so you can follow it up."}
+      </div>
+      <button className="btn btn-primary" style={{ width: "100%" }} disabled={busy} onClick={async () => { setBusy(true); await onSave(event, { amount: amount === "" ? null : Number(amount), note: note.trim() }); }}>
+        {isInvoice ? "Mark invoice sent" : "Mark quote sent"}
+      </button>
+    </ModalShell>
+  );
+}
+
+/* ================= REMINDERS ON A JOB ================= */
+function ReminderPanel({ job, reminders, onAdd, onUpdate, onRemove }) {
+  const [kind, setKind] = useState("service");
+  const [dueDate, setDueDate] = useState(addMonthsKey(toKey(new Date()), 12));
+  const [notes, setNotes] = useState("");
+  const list = reminders.filter((r) => r.jobId === job.id || (job.customerId && r.customerId === job.customerId)).sort((a, b) => a.dueDate.localeCompare(b.dueDate));
+
+  return (
+    <div style={{ marginBottom: 22 }}>
+      <div style={{ fontSize: 11.5, fontWeight: 700, color: TOKENS.slateLight, textTransform: "uppercase", marginBottom: 6 }}>Service &amp; certificate reminders</div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 8 }}>
+        {list.length === 0 && <div style={{ fontSize: 13, color: TOKENS.slateLight }}>None set for this customer.</div>}
+        {list.map((r) => (
+          <div key={r.id} style={{ display: "flex", alignItems: "center", gap: 10, background: "white", border: `1px solid ${TOKENS.line}`, borderRadius: 7, padding: "8px 10px", opacity: r.done ? 0.55 : 1 }}>
+            <div style={{ flex: 1, fontSize: 13 }}>
+              <strong>{REMINDER_KINDS[r.kind] || r.kind}</strong> — due {shortDate(r.dueDate)}{r.done ? " (dealt with)" : ""}
+              {r.notes && <div style={{ fontSize: 12, color: TOKENS.slate }}>{r.notes}</div>}
+            </div>
+            {!r.done && <button className="btn-ghost" onClick={() => onUpdate(r.id, { done: true })} style={{ fontSize: 12, fontWeight: 700 }}>Dealt with</button>}
+            <button className="btn-ghost" onClick={() => { if (window.confirm("Delete this reminder?")) onRemove(r.id); }} style={{ padding: 6 }}><X size={15} /></button>
+          </div>
+        ))}
+      </div>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+        <select value={kind} onChange={(e) => setKind(e.target.value)} style={{ flex: "1 1 170px" }}>
+          {Object.entries(REMINDER_KINDS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+        </select>
+        <input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} style={{ flex: "1 1 140px" }} />
+        <input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Notes (optional)" style={{ flex: "2 1 160px" }} />
+        <button className="btn" onClick={() => { if (dueDate) { onAdd({ kind, dueDate, notes: notes.trim(), jobId: job.id, customerId: job.customerId, customer: job.customer, address: job.address, phone: job.phone }); setNotes(""); } }}>Add reminder</button>
+      </div>
+    </div>
+  );
+}
+
+/* ================= MOBILE "MORE" SHEET ================= */
+function MoreSheet({ items, view, setView, onClose }) {
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-box" onClick={(e) => e.stopPropagation()}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {items.map((it) => (
+            <button key={it.id} className="btn" onClick={() => { setView(it.id); onClose(); }}
+              style={{ display: "flex", alignItems: "center", gap: 10, minHeight: 50, fontSize: 15, justifyContent: "flex-start", background: view === it.id ? TOKENS.ink : "white", color: view === it.id ? "white" : TOKENS.ink }}>
+              <it.Icon size={19} /> {it.label}
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
   );
 }
