@@ -628,9 +628,9 @@ export default function App() {
     if (job) {
       const d = p.details || {};
       let text;
-      if (p.outcome === "rejected") text = `Visit couldn't go ahead — ${ev.title} (${shortDate(ev.date)}): ${p.note}`;
-      else if (job.kind === "quote") text = `Quote visit done (${shortDate(ev.date)}): ${p.note}${d.quoteBy === "office" ? " — passed to the office to price and send." : " — engineer is pricing it."}`;
-      else text = `Visit completed (${shortDate(ev.date)}): ${p.note}${d.finished ? `\nJob finished. To invoice: ${d.invoiceNotes}` : ""}${signaturePath ? `\nSigned off by ${p.signedName || "the customer"}.` : ""}`;
+      if (p.outcome === "rejected") text = `Visit rejected — ${ev.title} (${shortDate(ev.date)})${p.note ? `: ${p.note}` : ""}${p.rebook ? " — to be rebooked." : " — not rebooked."}`;
+      else if (job.kind === "quote") text = `Quote visit accepted (${shortDate(ev.date)}): ${p.note}${d.quoteBy === "office" ? " — passed to the office to price and send." : " — engineer is pricing it."}`;
+      else text = `Visit accepted (${shortDate(ev.date)}): ${p.note}${d.finished ? `\nJob finished. To invoice: ${d.invoiceNotes}` : ""}${signaturePath ? `\nSigned off by ${p.signedName || "the customer"}.` : ""}`;
       await addJobNote(job.id, text, ev.date, { kind: "feedback", outcome: p.outcome, eventId });
 
       if (p.outcome === "completed") {
@@ -812,8 +812,12 @@ export default function App() {
 
       {outcomeModal && (
         <OutcomeModal modal={outcomeModal} jobs={jobs} officeAdminName={officeAdmin?.name} onClose={() => setOutcomeModal(null)}
-          onSave={async (id, payload) => { await setEventOutcome(id, payload); setOutcomeModal(null); }}
-          onRebook={(ev) => { setOutcomeModal(null); setEventModal({ date: toKey(new Date()), event: null, presetJob: jobById[ev.jobId] }); }} />
+          onSave={async (id, payload) => {
+            const ev = events.find((e) => e.id === id);
+            await setEventOutcome(id, payload);
+            setOutcomeModal(null);
+            if (payload.rebook && ev) setEventModal({ date: toKey(new Date()), event: null, presetJob: ev.jobId ? jobById[ev.jobId] : null, presetFrom: ev });
+          }} />
       )}
       {officeModal && (
         <OfficeDoneModal modal={officeModal} job={officeModal.event.jobId ? jobById[officeModal.event.jobId] : null} onClose={() => setOfficeModal(null)}
@@ -1589,7 +1593,7 @@ function JobDetail({ job, users, userById, customer, events, onBack, onAddNote, 
       {events.length > 0 && (
         <div style={{ marginBottom: 22 }}>
           <div style={{ fontSize: 11.5, fontWeight: 700, color: TOKENS.slateLight, textTransform: "uppercase", marginBottom: 2 }}>Visits &amp; feedback</div>
-          <div style={{ fontSize: 11.5, color: TOKENS.slateLight, marginBottom: 6 }}>Tick when a visit's done, cross if it couldn't go ahead.</div>
+          <div style={{ fontSize: 11.5, color: TOKENS.slateLight, marginBottom: 6 }}>Accept a visit to give feedback, or reject it to rebook or leave it.</div>
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
             {events.slice().sort((a, b) => (b.date + (b.time || "")).localeCompare(a.date + (a.time || ""))).map((ev) => (
               <FeedbackRow key={ev.id} ev={ev} user={userById[ev.assignedTo]} onOpen={onOpenEvent} onMarkOutcome={onMarkOutcome} />
@@ -2177,14 +2181,15 @@ function JobModal({ modal, users, customers, currentUserId, onClose, onCreate })
 function EventModal({ modal, users, jobs, onClose, onCreate, onUpdate, onDelete }) {
   const editing = modal.event;
   const preset = modal.presetJob;
-  const [title, setTitle] = useState(editing?.title || (preset ? `Visit — ${preset.customer}` : ""));
+  const from = modal.presetFrom || null; // rebooking a rejected visit
+  const [title, setTitle] = useState(editing?.title || from?.title || (preset ? `Visit — ${preset.customer}` : ""));
   const [slots, setSlots] = useState([{ date: editing?.date || modal.date, time: editing?.time || "09:00" }]);
-  const [duration, setDuration] = useState(editing?.duration || "1h");
-  const [assignedTo, setAssignedTo] = useState(editing?.assignedTo || preset?.assignedTo || (users[0]?.id ?? ""));
+  const [duration, setDuration] = useState(editing?.duration || from?.duration || "1h");
+  const [assignedTo, setAssignedTo] = useState(editing?.assignedTo || from?.assignedTo || preset?.assignedTo || (users[0]?.id ?? ""));
   const [jobId, setJobId] = useState(editing?.jobId || preset?.id || "");
-  const [notes, setNotes] = useState(editing?.notes || "");
-  const [addrMode, setAddrMode] = useState(editing?.address ? "other" : "job");
-  const [address, setAddress] = useState(editing?.address || "");
+  const [notes, setNotes] = useState(editing?.notes || from?.notes || "");
+  const [addrMode, setAddrMode] = useState((editing?.address || from?.address) ? "other" : "job");
+  const [address, setAddress] = useState(editing?.address || from?.address || "");
   const linkedJob = jobs.find((j) => j.id === jobId) || null;
   const useJobAddress = !!linkedJob && addrMode === "job";
 
@@ -2207,7 +2212,7 @@ function EventModal({ modal, users, jobs, onClose, onCreate, onUpdate, onDelete 
   };
 
   return (
-    <ModalShell title={editing ? "Edit booking" : "Book a visit"} onClose={onClose}>
+    <ModalShell title={editing ? "Edit booking" : from ? "Rebook visit" : "Book a visit"} onClose={onClose}>
       <div className="field"><label>Title</label><input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="e.g. Boiler service, Site survey" /></div>
 
       <div className="field">
@@ -2285,7 +2290,7 @@ function LogWorkModal({ modal, onClose, onSave }) {
   );
 }
 
-function OutcomeModal({ modal, jobs, officeAdminName, onClose, onSave, onRebook }) {
+function OutcomeModal({ modal, jobs, officeAdminName, onClose, onSave }) {
   const { event, kind } = modal;
   const isReject = kind === "rejected";
   const [text, setText] = useState(event.outcomeNote || "");
@@ -2305,6 +2310,27 @@ function OutcomeModal({ modal, jobs, officeAdminName, onClose, onSave, onRebook 
   const office = officeAdminName ? officeAdminName.split(" ")[0] : "the office";
   const Office = office.charAt(0).toUpperCase() + office.slice(1);
 
+  if (isReject) {
+    const reject = async (rebook) => { setBusy(true); await onSave(event.id, { outcome: "rejected", note: text.trim(), details: { rebook }, rebook }); };
+    return (
+      <ModalShell title="Reject visit" onClose={onClose}>
+        <div style={{ marginBottom: 12 }}>
+          <div style={{ fontSize: 15, fontWeight: 700 }}>{event.title}</div>
+          <div style={{ fontSize: 12.5, color: TOKENS.slateLight }}>{shortDate(event.date)}{job ? ` · ${job.number} · ${job.customer}` : ""}</div>
+        </div>
+        <div className="field">
+          <label>Reason (optional)</label>
+          <textarea rows={3} value={text} onChange={(e) => setText(e.target.value)} placeholder="e.g. Customer not in, no access, part not arrived…" />
+        </div>
+        <label>Does it need rebooking?</label>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          <button className="btn btn-primary" disabled={busy} style={{ minHeight: 50, fontSize: 15 }} onClick={() => reject(true)}>Reject &amp; rebook</button>
+          <button className="btn" disabled={busy} style={{ minHeight: 50, fontSize: 15, color: TOKENS.red, borderColor: TOKENS.red }} onClick={() => reject(false)}>Reject — don't rebook</button>
+        </div>
+      </ModalShell>
+    );
+  }
+
   const needFinished = !isReject && job && !isQuote;
   const canSave = !busy && text.trim() && (!needFinished || finished !== null) && !(needFinished && finished && !invoiceNotes.trim());
 
@@ -2319,8 +2345,8 @@ function OutcomeModal({ modal, jobs, officeAdminName, onClose, onSave, onRebook 
     });
   };
 
-  const title = isReject ? "Visit not done" : isQuote ? "Quote visit done" : "Visit done";
-  const label = isReject ? "Why couldn't it go ahead?" : isQuote ? "What needs quoting?" : "What was done?";
+  const title = isQuote ? "Accept quote visit" : "Accept visit";
+  const label = isQuote ? "Feedback — what needs quoting?" : "Feedback — what was done?";
   const placeholder = isReject ? "e.g. Customer not in, access blocked, part unavailable…" : isQuote ? "Work required, materials, sizes / measurements, access, anything the customer asked for…" : "e.g. Replaced pump, tested and working";
 
   return (
@@ -2395,10 +2421,7 @@ function OutcomeModal({ modal, jobs, officeAdminName, onClose, onSave, onRebook 
         </div>
       )}
 
-      {isReject && <div style={{ fontSize: 12, color: TOKENS.slateLight, marginBottom: 10 }}>You can book another visit for this job straight after saving.</div>}
-
       <div style={{ display: "flex", gap: 8 }}>
-        {isReject && event.jobId && <button className="btn" onClick={() => onRebook(event)}>Book another visit</button>}
         <button className="btn btn-primary" style={{ flex: 1, minHeight: 46 }} disabled={!canSave} onClick={save}>{busy ? "Saving…" : "Save"}</button>
       </div>
     </ModalShell>
@@ -2509,7 +2532,7 @@ function VisitCard({ ev, job, user, onEdit, onOpenJob, onLogWork, onMarkOutcome,
         {ev.notes && <div style={{ fontSize: 12.5, marginTop: 6, whiteSpace: "pre-wrap", background: office ? `${TOKENS.amber}10` : TOKENS.paper, borderRadius: 6, padding: "6px 8px" }}>{ev.notes}</div>}
         {ev.outcome && ev.outcomeNote && (
           <div style={{ fontSize: 12, color: ev.outcome === "completed" ? TOKENS.green : TOKENS.red, marginTop: 6, fontStyle: "italic" }}>
-            {office ? "Sent: " : ev.outcome === "completed" ? "Done: " : "Not done: "}{ev.outcomeNote}
+            {office ? "Sent: " : ev.outcome === "completed" ? "Accepted: " : "Rejected: "}{ev.outcomeNote}
           </div>
         )}
       </div>
@@ -2529,8 +2552,8 @@ function VisitCard({ ev, job, user, onEdit, onOpenJob, onLogWork, onMarkOutcome,
           </div>
         ) : (
           <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
-            <button onClick={() => onMarkOutcome(ev, "completed")} style={bigBtn(TOKENS.green)}><Check size={22} strokeWidth={3} /> Done</button>
-            <button onClick={() => onMarkOutcome(ev, "rejected")} style={bigBtn(TOKENS.red)}><X size={22} strokeWidth={3} /> Not done</button>
+            <button onClick={() => onMarkOutcome(ev, "completed")} style={bigBtn(TOKENS.green)}><Check size={22} strokeWidth={3} /> Accept</button>
+            <button onClick={() => onMarkOutcome(ev, "rejected")} style={bigBtn(TOKENS.red)}><X size={22} strokeWidth={3} /> Reject</button>
           </div>
         )
       )}
@@ -2774,12 +2797,12 @@ function MoreSheet({ items, view, setView, onClose }) {
 
 
 /* ================= COMPACT DIARY ROW + DETAILS SHEET ================= */
-const tickBtn = (colour) => ({ width: 46, height: 46, borderRadius: 10, border: `2px solid ${colour}`, background: `${colour}12`, color: colour, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, padding: 0 });
+const tickBtn = (colour) => ({ width: 56, height: 50, borderRadius: 10, border: `2px solid ${colour}`, background: `${colour}12`, color: colour, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 1, flexShrink: 0, padding: 0, fontSize: 10.5, fontWeight: 700 });
 
 function OutcomeIcon({ ev }) {
   const office = isOfficeKind(ev.kind);
-  if (ev.outcome === "completed") return <span title={office ? "Sent" : "Done"} style={{ display: "flex", alignItems: "center", gap: 4, color: TOKENS.green, fontSize: 12, fontWeight: 700, flexShrink: 0 }}><CheckCircle2 size={22} />{office ? "Sent" : "Done"}</span>;
-  if (ev.outcome === "rejected") return <span title="Not done" style={{ display: "flex", alignItems: "center", gap: 4, color: TOKENS.red, fontSize: 12, fontWeight: 700, flexShrink: 0 }}><XCircle size={22} />Not done</span>;
+  if (ev.outcome === "completed") return <span title={office ? "Sent" : "Accepted"} style={{ display: "flex", alignItems: "center", gap: 4, color: TOKENS.green, fontSize: 12, fontWeight: 700, flexShrink: 0 }}><CheckCircle2 size={22} />{office ? "Sent" : "Accepted"}</span>;
+  if (ev.outcome === "rejected") return <span title="Rejected" style={{ display: "flex", alignItems: "center", gap: 4, color: TOKENS.red, fontSize: 12, fontWeight: 700, flexShrink: 0 }}><XCircle size={22} />Rejected</span>;
   return null;
 }
 
@@ -2787,12 +2810,12 @@ function TickCross({ ev, onMarkOutcome }) {
   if (ev.outcome) return <OutcomeIcon ev={ev} />;
   const stop = (fn) => (e) => { e.stopPropagation(); fn(); };
   if (isOfficeKind(ev.kind)) {
-    return <button aria-label="Mark sent" title="Mark sent" onClick={stop(() => onMarkOutcome(ev, "completed"))} style={tickBtn(TOKENS.green)}><Check size={24} strokeWidth={3} /></button>;
+    return <button aria-label="Mark sent" title="Mark sent" onClick={stop(() => onMarkOutcome(ev, "completed"))} style={tickBtn(TOKENS.green)}><Check size={20} strokeWidth={3} />Sent</button>;
   }
   return (
     <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
-      <button aria-label="Done" title="Done" onClick={stop(() => onMarkOutcome(ev, "completed"))} style={tickBtn(TOKENS.green)}><Check size={24} strokeWidth={3} /></button>
-      <button aria-label="Not done" title="Not done" onClick={stop(() => onMarkOutcome(ev, "rejected"))} style={tickBtn(TOKENS.red)}><X size={24} strokeWidth={3} /></button>
+      <button aria-label="Accept" title="Accept — give feedback" onClick={stop(() => onMarkOutcome(ev, "completed"))} style={tickBtn(TOKENS.green)}><Check size={20} strokeWidth={3} />Accept</button>
+      <button aria-label="Reject" title="Reject — rebook or not" onClick={stop(() => onMarkOutcome(ev, "rejected"))} style={tickBtn(TOKENS.red)}><X size={20} strokeWidth={3} />Reject</button>
     </div>
   );
 }
@@ -2847,7 +2870,7 @@ function VisitSheet({ ev, job, user, onClose, onEdit, onOpenJob, onLogWork, onMa
       {ev.outcome && (
         <div style={{ fontSize: 13.5, color: ev.outcome === "completed" ? TOKENS.green : TOKENS.red, marginBottom: 12, display: "flex", gap: 6, alignItems: "flex-start" }}>
           {ev.outcome === "completed" ? <CheckCircle2 size={18} style={{ flexShrink: 0 }} /> : <XCircle size={18} style={{ flexShrink: 0 }} />}
-          <span><strong>{office ? "Sent" : ev.outcome === "completed" ? "Done" : "Not done"}</strong>{ev.outcomeNote ? ` — ${ev.outcomeNote}` : ""}</span>
+          <span><strong>{office ? "Sent" : ev.outcome === "completed" ? "Accepted" : "Rejected"}</strong>{ev.outcomeNote ? ` — ${ev.outcomeNote}` : ""}{ev.outcome === "rejected" && ev.details && "rebook" in ev.details ? (ev.details.rebook ? " · rebooked" : " · not rebooked") : ""}</span>
         </div>
       )}
 
@@ -2864,8 +2887,8 @@ function VisitSheet({ ev, job, user, onClose, onEdit, onOpenJob, onLogWork, onMa
           </div>
         ) : (
           <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
-            <button onClick={() => onMarkOutcome(ev, "completed")} style={bigBtn(TOKENS.green)}><Check size={22} strokeWidth={3} /> Done</button>
-            <button onClick={() => onMarkOutcome(ev, "rejected")} style={bigBtn(TOKENS.red)}><X size={22} strokeWidth={3} /> Not done</button>
+            <button onClick={() => onMarkOutcome(ev, "completed")} style={bigBtn(TOKENS.green)}><Check size={22} strokeWidth={3} /> Accept</button>
+            <button onClick={() => onMarkOutcome(ev, "rejected")} style={bigBtn(TOKENS.red)}><X size={22} strokeWidth={3} /> Reject</button>
           </div>
         )
       )}
@@ -2887,6 +2910,7 @@ function FeedbackRow({ ev, user, onOpen, onMarkOutcome }) {
         <div style={{ fontSize: 13, fontWeight: 700 }}>{shortDate(ev.date)}{ev.time ? ` · ${ev.time}` : ""} — {ev.title}</div>
         <div style={{ fontSize: 11.5, color: TOKENS.slate }}>{user?.name || "Unassigned"}{office && !ev.outcome ? " · office to do" : ""}</div>
         {ev.outcomeNote && <div style={{ fontSize: 13, marginTop: 4, whiteSpace: "pre-wrap" }}>{ev.outcomeNote}</div>}
+        {ev.outcome === "rejected" && ev.details && "rebook" in ev.details && <div style={{ fontSize: 12, marginTop: 3, color: TOKENS.red }}>{ev.details.rebook ? "Rebooked" : "Not rebooked"}</div>}
         {ev.details?.finished && ev.details?.invoiceNotes && <div style={{ fontSize: 12.5, marginTop: 3, color: TOKENS.green }}><strong>To invoice:</strong> {ev.details.invoiceNotes}</div>}
         {ev.details?.quoteBy && <div style={{ fontSize: 12, marginTop: 3, color: TOKENS.slate }}>{ev.details.quoteBy === "office" ? "Office to price & send" : "Engineer pricing it"}</div>}
         {ev.signaturePath && <SignatureThumb path={ev.signaturePath} name={ev.signedName} />}
