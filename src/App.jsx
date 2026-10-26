@@ -142,6 +142,10 @@ async function hashPin(pin, salt) {
   return btoa(String.fromCharCode(...new Uint8Array(bits)));
 }
 
+// A booking's own site address, else the linked job's site address
+const eventAddress = (ev, job) => (ev?.address || job?.address || "").trim();
+const shortPlace = (addr) => (addr || "").split(",")[0].trim();
+
 const telHref = (phone) => `tel:${String(phone).replace(/[^0-9+]/g, "")}`;
 
 const seedUsers = () => [{ id: uid(), name: "Jack Moore", colour: TECH_COLOURS[0], trade: "Director / Gas Safe" }];
@@ -242,7 +246,7 @@ function jobFromDb(row) {
   };
 }
 function eventFromDb(row) {
-  return { id: row.id, date: row.date, time: row.time, duration: row.duration, title: row.title, jobId: row.job_id, assignedTo: row.assigned_to, notes: row.notes, outcome: row.outcome || null, outcomeNote: row.outcome_note || "", kind: row.kind || "visit", details: row.details || null, signaturePath: row.signature_path || null, signedName: row.signed_name || "" };
+  return { id: row.id, date: row.date, time: row.time, duration: row.duration, title: row.title, jobId: row.job_id, assignedTo: row.assigned_to, notes: row.notes, outcome: row.outcome || null, outcomeNote: row.outcome_note || "", kind: row.kind || "visit", details: row.details || null, address: row.address || "", signaturePath: row.signature_path || null, signedName: row.signed_name || "" };
 }
 function reminderFromDb(r) {
   return { id: r.id, customerId: r.customer_id, jobId: r.job_id, customer: r.customer || "", address: r.address || "", phone: r.phone || "", kind: r.kind, dueDate: r.due_date, notes: r.notes || "", done: r.done };
@@ -297,6 +301,7 @@ export default function App() {
   const [outcomeModal, setOutcomeModal] = useState(null);
   const [officeModal, setOfficeModal] = useState(null);
   const [moreOpen, setMoreOpen] = useState(false);
+  const [sheetEventId, setSheetEventId] = useState(null);
 
   // ---- auth session ----
   useEffect(() => {
@@ -457,7 +462,7 @@ export default function App() {
       const number = formatNumber(kind, new Date().getFullYear(), n);
       let customerId = form.customerId;
       if (!customerId) {
-        const { data: newCust, error: custErr } = await supabase.from("customers").insert({ name: form.customer, address: form.address, phone: form.phone }).select().single();
+        const { data: newCust, error: custErr } = await supabase.from("customers").insert({ name: form.customer, address: form.customerAddress ?? form.address, phone: form.phone }).select().single();
         if (custErr) throw custErr;
         customerId = newCust.id;
       }
@@ -677,7 +682,9 @@ export default function App() {
     await loadImages(jobId, true);
   };
 
-  const openJobFromAnywhere = (id) => { setOpenJobId(id); setView("jobs"); };
+  const openJobFromAnywhere = (id) => { setSheetEventId(null); setOpenJobId(id); setView("jobs"); };
+  const markOutcome = (ev, kind) => { setSheetEventId(null); if (isOfficeKind(ev.kind)) setOfficeModal({ event: ev }); else setOutcomeModal({ event: ev, kind }); };
+  const openEventSheet = (ev) => setSheetEventId(ev.id);
 
   // ---- render states ----
   if (authLoading || session === undefined) {
@@ -731,23 +738,23 @@ export default function App() {
               eventsByDay={eventsByDay} users={assignees} activeTechs={activeTechs} setActiveTechs={setActiveTechs}
               jobById={jobById} userById={userById}
               onNewEvent={(date) => setEventModal({ date })}
-              onEditEvent={(ev) => setEventModal({ date: ev.date, event: ev })}
+              onEditEvent={openEventSheet}
               onOpenJob={openJobFromAnywhere}
               onLogWork={(job, date) => setLogWorkModal({ job, date })}
-              onMarkOutcome={(ev, kind) => (isOfficeKind(ev.kind) ? setOfficeModal({ event: ev }) : setOutcomeModal({ event: ev, kind }))} />
+              onMarkOutcome={markOutcome} />
           )}
 
           {view === "today" && (
             <MyDayView me={me} events={events} jobById={jobById} userById={userById} isAdmin={isAdmin}
-              onEdit={(ev) => setEventModal({ date: ev.date, event: ev })} onOpenJob={openJobFromAnywhere}
-              onLogWork={(job, date) => setLogWorkModal({ job, date })} onMarkOutcome={(ev, kind) => (isOfficeKind(ev.kind) ? setOfficeModal({ event: ev }) : setOutcomeModal({ event: ev, kind }))}
+              onEdit={openEventSheet} onOpenJob={openJobFromAnywhere}
+              onLogWork={(job, date) => setLogWorkModal({ job, date })} onMarkOutcome={markOutcome}
               onNewEvent={(date) => setEventModal({ date })} />
           )}
 
           {view === "office" && (
             <OfficeView events={events} jobs={jobs} reminders={reminders} jobById={jobById} userById={userById} noAdminsYet={noAdminsYet}
               onEdit={(ev) => setEventModal({ date: ev.date, event: ev })} onOpenJob={openJobFromAnywhere}
-              onMarkOutcome={(ev, kind) => (isOfficeKind(ev.kind) ? setOfficeModal({ event: ev }) : setOutcomeModal({ event: ev, kind }))} onUpdateReminder={updateReminder} onGoTeam={() => setView("team")}
+              onMarkOutcome={markOutcome} onUpdateReminder={updateReminder} onGoTeam={() => setView("team")}
               onRaiseJob={(r) => setJobModal({ mode: "new", kind: "job", presetCustomer: r.customerId ? customerById[r.customerId] : null, presetNew: { customer: r.customer, address: r.address, phone: r.phone }, presetDescription: `${REMINDER_KINDS[r.kind] || "Service"}${r.notes ? ` — ${r.notes}` : ""}`, presetJobType: "service", reminderId: r.id })} />
           )}
 
@@ -763,7 +770,8 @@ export default function App() {
               onOpenCustomer={(id) => { setOpenCustomerId(id); setView("customers"); }}
               onDeleteJob={async (id) => { const ok = await deleteJob(id); if (ok) setOpenJobId(null); }}
               currentUser={me} onUpdateSafety={updateJobSafety} onPrintSafety={(id) => setPrintJobId(id)} onUpdateFinance={updateJobFinance}
-              reminderOps={{ reminders, addReminder, updateReminder, removeReminder }} />
+              reminderOps={{ reminders, addReminder, updateReminder, removeReminder }}
+              onMarkOutcome={markOutcome} onOpenEvent={openEventSheet} />
           )}
 
           {view === "customers" && (
@@ -811,6 +819,18 @@ export default function App() {
         <OfficeDoneModal modal={officeModal} job={officeModal.event.jobId ? jobById[officeModal.event.jobId] : null} onClose={() => setOfficeModal(null)}
           onSave={async (ev, vals) => { await completeOfficeTask(ev, vals); setOfficeModal(null); }} />
       )}
+
+      {sheetEventId && (() => {
+        const ev = events.find((e) => e.id === sheetEventId);
+        if (!ev) return null;
+        const job = ev.jobId ? jobById[ev.jobId] : null;
+        return (
+          <VisitSheet ev={ev} job={job} user={userById[ev.assignedTo]} onClose={() => setSheetEventId(null)}
+            onEdit={() => { setSheetEventId(null); setEventModal({ date: ev.date, event: ev }); }}
+            onOpenJob={openJobFromAnywhere} onMarkOutcome={markOutcome}
+            onLogWork={(j, date) => { setSheetEventId(null); setLogWorkModal({ job: j, date }); }} />
+        );
+      })()}
 
       {moreOpen && (
         <MoreSheet items={mobileNav(showOffice).more.map((id) => NAV_ALL[id])} view={view} setView={setView} onClose={() => setMoreOpen(false)} />
@@ -1288,10 +1308,11 @@ function DiaryView({ cursor, setCursor, today, selectedDay, setSelectedDay, even
           <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontWeight: 700, fontSize: 19, marginBottom: 2 }}>{dayLabel(selDateObj)}</div>
           <div style={{ fontSize: 12, color: TOKENS.slateLight, marginBottom: 14 }}>{dayEvents.length} booking{dayEvents.length !== 1 ? "s" : ""}</div>
           {dayEvents.length === 0 && <div style={{ fontSize: 13, color: TOKENS.slateLight, padding: "14px 0" }}>Nothing booked. Add a visit, callback or site survey.</div>}
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {dayEvents.length > 0 && <div style={{ fontSize: 11.5, color: TOKENS.slateLight, marginTop: -8, marginBottom: 8 }}>Tap a booking for the address, directions and notes.</div>}
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
             {dayEvents.map((ev) => (
-              <VisitCard key={ev.id} ev={ev} job={ev.jobId ? jobById[ev.jobId] : null} user={userById[ev.assignedTo]}
-                onEdit={onEditEvent} onOpenJob={onOpenJob} onLogWork={onLogWork} onMarkOutcome={onMarkOutcome} />
+              <VisitRow key={ev.id} ev={ev} job={ev.jobId ? jobById[ev.jobId] : null} user={userById[ev.assignedTo]}
+                onOpen={onEditEvent} onMarkOutcome={onMarkOutcome} />
             ))}
           </div>
           <button className="btn btn-primary" style={{ width: "100%", marginTop: 14 }} onClick={() => onNewEvent(selectedDay)}>+ Book on this day</button>
@@ -1302,7 +1323,7 @@ function DiaryView({ cursor, setCursor, today, selectedDay, setSelectedDay, even
 }
 
 /* ================= JOBS ================= */
-function JobsView({ jobs, users, userById, customerById, jobFilter, setJobFilter, jobSearch, setJobSearch, openJobId, setOpenJobId, onNewJob, onAddNote, onUpdateJob, onConvert, onBookVisit, events, images, loadImages, addImages, removeImage, checklistOps, onOpenCustomer, currentUser, onUpdateSafety, onPrintSafety, onDeleteJob, onUpdateFinance, reminderOps }) {
+function JobsView({ jobs, users, userById, customerById, jobFilter, setJobFilter, jobSearch, setJobSearch, openJobId, setOpenJobId, onNewJob, onAddNote, onUpdateJob, onConvert, onBookVisit, events, images, loadImages, addImages, removeImage, checklistOps, onOpenCustomer, currentUser, onUpdateSafety, onPrintSafety, onDeleteJob, onUpdateFinance, reminderOps, onMarkOutcome, onOpenEvent }) {
   const filtered = jobs.filter((j) => {
     if (jobFilter === "open" && ["complete", "invoiced"].includes(j.status)) return false;
     if (jobFilter === "quote" && j.kind !== "quote") return false;
@@ -1324,7 +1345,8 @@ function JobsView({ jobs, users, userById, customerById, jobFilter, setJobFilter
         onAddNote={onAddNote} onUpdateJob={onUpdateJob} onConvert={onConvert} onBookVisit={onBookVisit}
         images={images[openJob.id]} loadImages={loadImages} addImages={addImages} removeImage={removeImage}
         checklistOps={checklistOps} onOpenCustomer={onOpenCustomer}
-        currentUser={currentUser} onUpdateSafety={onUpdateSafety} onPrintSafety={onPrintSafety} onDeleteJob={onDeleteJob} onUpdateFinance={onUpdateFinance} reminderOps={reminderOps} />
+        currentUser={currentUser} onUpdateSafety={onUpdateSafety} onPrintSafety={onPrintSafety} onDeleteJob={onDeleteJob} onUpdateFinance={onUpdateFinance} reminderOps={reminderOps}
+        onMarkOutcome={onMarkOutcome} onOpenEvent={onOpenEvent} />
     );
   }
 
@@ -1450,7 +1472,7 @@ function FinancePanel({ job, onUpdateFinance }) {
   );
 }
 
-function JobDetail({ job, users, userById, customer, events, onBack, onAddNote, onUpdateJob, onConvert, onBookVisit, images, loadImages, addImages, removeImage, checklistOps, onOpenCustomer, currentUser, onUpdateSafety, onPrintSafety, onDeleteJob, onUpdateFinance, reminderOps }) {
+function JobDetail({ job, users, userById, customer, events, onBack, onAddNote, onUpdateJob, onConvert, onBookVisit, images, loadImages, addImages, removeImage, checklistOps, onOpenCustomer, currentUser, onUpdateSafety, onPrintSafety, onDeleteJob, onUpdateFinance, reminderOps, onMarkOutcome, onOpenEvent }) {
   const [note, setNote] = useState("");
   const [noteDate, setNoteDate] = useState(toKey(new Date()));
   const [checklistText, setChecklistText] = useState("");
@@ -1504,7 +1526,7 @@ function JobDetail({ job, users, userById, customer, events, onBack, onAddNote, 
 
       <ProgressStepper status={job.status} onSet={(s) => onUpdateJob(job.id, { status: s })} />
 
-      <div style={{ marginBottom: 14 }}><AddressLinks address={job.address} phone={job.phone} /></div>
+      <div style={{ marginBottom: 14 }}><SiteAddress job={job} customer={customer} onSave={(address) => onUpdateJob(job.id, { address })} /></div>
       <div style={{ background: "white", border: `1px solid ${TOKENS.line}`, borderRadius: 9, padding: 14, marginBottom: 14 }}>
         <div style={{ fontSize: 13.5 }}>{job.description || "No description given."}</div>
       </div>
@@ -1566,24 +1588,12 @@ function JobDetail({ job, users, userById, customer, events, onBack, onAddNote, 
 
       {events.length > 0 && (
         <div style={{ marginBottom: 22 }}>
-          <div style={{ fontSize: 11.5, fontWeight: 700, color: TOKENS.slateLight, textTransform: "uppercase", marginBottom: 6 }}>Visits &amp; feedback</div>
+          <div style={{ fontSize: 11.5, fontWeight: 700, color: TOKENS.slateLight, textTransform: "uppercase", marginBottom: 2 }}>Visits &amp; feedback</div>
+          <div style={{ fontSize: 11.5, color: TOKENS.slateLight, marginBottom: 6 }}>Tick when a visit's done, cross if it couldn't go ahead.</div>
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            {events.slice().sort((a, b) => (b.date + (b.time || "")).localeCompare(a.date + (a.time || ""))).map((ev) => {
-              const c = ev.outcome === "completed" ? TOKENS.green : ev.outcome === "rejected" ? TOKENS.red : TOKENS.line;
-              return (
-                <div key={ev.id} style={{ background: "white", border: `1px solid ${TOKENS.line}`, borderLeft: `3px solid ${c}`, borderRadius: 7, padding: "8px 10px" }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 12.5 }}>
-                    <span style={{ fontWeight: 700 }}>{shortDate(ev.date)}{ev.time ? ` · ${ev.time}` : ""} — {ev.title}</span>
-                    <span style={{ fontSize: 11, fontWeight: 700, color: ev.outcome ? c : isOfficeKind(ev.kind) ? TOKENS.amber : TOKENS.slateLight, whiteSpace: "nowrap" }}>{isOfficeKind(ev.kind) ? (ev.outcome ? "Sent" : "Office to do") : ev.outcome === "completed" ? "Done" : ev.outcome === "rejected" ? "Not done" : "Booked"}</span>
-                  </div>
-                  <div style={{ fontSize: 11.5, color: TOKENS.slate, marginTop: 2 }}>{userById[ev.assignedTo]?.name || "Unassigned"}</div>
-                  {ev.outcomeNote && <div style={{ fontSize: 13, marginTop: 4, whiteSpace: "pre-wrap" }}>{ev.outcomeNote}</div>}
-                  {ev.details?.finished && ev.details?.invoiceNotes && <div style={{ fontSize: 12.5, marginTop: 4, color: TOKENS.green }}><strong>To invoice:</strong> {ev.details.invoiceNotes}</div>}
-                  {ev.details?.quoteBy && <div style={{ fontSize: 12, marginTop: 4, color: TOKENS.slate }}>{ev.details.quoteBy === "office" ? "Office to price & send" : "Engineer pricing it"}</div>}
-                  {ev.signaturePath && <SignatureThumb path={ev.signaturePath} name={ev.signedName} />}
-                </div>
-              );
-            })}
+            {events.slice().sort((a, b) => (b.date + (b.time || "")).localeCompare(a.date + (a.time || ""))).map((ev) => (
+              <FeedbackRow key={ev.id} ev={ev} user={userById[ev.assignedTo]} onOpen={onOpenEvent} onMarkOutcome={onMarkOutcome} />
+            ))}
           </div>
         </div>
       )}
@@ -2066,15 +2076,19 @@ function JobModal({ modal, users, customers, currentUserId, onClose, onCreate })
   const [priority, setPriority] = useState("normal");
   const [department, setDepartment] = useState("plumbing");
   const [projectName, setProjectName] = useState("");
+  const [siteSame, setSiteSame] = useState(true);
+  const [siteAddress, setSiteAddress] = useState("");
 
   const selectedCustomer = customers.find((c) => c.id === selectedCustomerId);
-  const canSubmit = customerMode === "existing" ? !!selectedCustomerId : customer.trim().length > 0;
+  const customerAddress = (customerMode === "existing" ? selectedCustomer?.address : address) || "";
+  const site = siteSame ? customerAddress.trim() : siteAddress.trim();
+  const canSubmit = (customerMode === "existing" ? !!selectedCustomerId : customer.trim().length > 0) && (siteSame || !!siteAddress.trim());
 
   const handleSubmit = () => {
     if (customerMode === "existing" && selectedCustomer) {
-      onCreate({ kind, customerId: selectedCustomer.id, customer: selectedCustomer.name, address: selectedCustomer.address, phone: selectedCustomer.phone, description, assignedTo, jobType, priority, department, projectName: projectName.trim() });
+      onCreate({ kind, customerId: selectedCustomer.id, customer: selectedCustomer.name, address: site, customerAddress: selectedCustomer.address, phone: selectedCustomer.phone, description, assignedTo, jobType, priority, department, projectName: projectName.trim() });
     } else {
-      onCreate({ kind, customerId: null, customer: customer.trim(), address, phone, description, assignedTo, jobType, priority, department, projectName: projectName.trim() });
+      onCreate({ kind, customerId: null, customer: customer.trim(), address: site, customerAddress: address.trim(), phone, description, assignedTo, jobType, priority, department, projectName: projectName.trim() });
     }
   };
 
@@ -2109,9 +2123,21 @@ function JobModal({ modal, users, customers, currentUserId, onClose, onCreate })
         ) : (
           <>
             <div className="field"><input value={customer} onChange={(e) => setCustomer(e.target.value)} placeholder="Customer name, e.g. Mrs. Patel" /></div>
-            <div className="field"><input value={address} onChange={(e) => setAddress(e.target.value)} placeholder="Site address" /></div>
+            <div className="field"><input value={address} onChange={(e) => setAddress(e.target.value)} placeholder="Customer's address" /></div>
             <div className="field"><input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="Phone" /></div>
           </>
+        )}
+      </div>
+
+      <div className="field">
+        <label>Job site address</label>
+        <ChoiceButtons value={siteSame} onChange={setSiteSame} options={[[true, "Same as customer address", TOKENS.accent2], [false, "Different address"]]} />
+        {siteSame ? (
+          <div style={{ fontSize: 12.5, color: customerAddress ? TOKENS.slate : TOKENS.slateLight, marginTop: 6, display: "flex", gap: 5 }}>
+            <MapPin size={14} style={{ flexShrink: 0, marginTop: 1 }} />{customerAddress || "Pick or add the customer first — their address will be used."}
+          </div>
+        ) : (
+          <input autoFocus value={siteAddress} onChange={(e) => setSiteAddress(e.target.value)} placeholder="Site address incl. postcode, e.g. 12 High St, March PE15 8AA" style={{ marginTop: 8 }} />
         )}
       </div>
 
@@ -2157,6 +2183,10 @@ function EventModal({ modal, users, jobs, onClose, onCreate, onUpdate, onDelete 
   const [assignedTo, setAssignedTo] = useState(editing?.assignedTo || preset?.assignedTo || (users[0]?.id ?? ""));
   const [jobId, setJobId] = useState(editing?.jobId || preset?.id || "");
   const [notes, setNotes] = useState(editing?.notes || "");
+  const [addrMode, setAddrMode] = useState(editing?.address ? "other" : "job");
+  const [address, setAddress] = useState(editing?.address || "");
+  const linkedJob = jobs.find((j) => j.id === jobId) || null;
+  const useJobAddress = !!linkedJob && addrMode === "job";
 
   const linkedJobs = jobs.filter((j) => !["complete", "invoiced"].includes(j.status));
   const jobLabel = (j) => `${j.number}${j.projectName ? ` — ${j.projectName}` : ""} · ${j.customer}${j.address ? `, ${j.address}` : ""}`;
@@ -2168,7 +2198,7 @@ function EventModal({ modal, users, jobs, onClose, onCreate, onUpdate, onDelete 
   const canSubmit = title.trim() && slots.every((s) => s.date);
 
   const handleSubmit = () => {
-    const base = { title: title.trim(), duration, assignedTo: assignedTo || null, jobId: jobId || null, notes };
+    const base = { title: title.trim(), duration, assignedTo: assignedTo || null, jobId: jobId || null, notes, address: useJobAddress ? null : (address.trim() || null) };
     if (editing) {
       onUpdate(editing.id, { ...base, date: slots[0].date, time: slots[0].time });
     } else {
@@ -2212,6 +2242,17 @@ function EventModal({ modal, users, jobs, onClose, onCreate, onUpdate, onDelete 
           <option value="">— No linked job —</option>
           {linkedJobs.map((j) => <option key={j.id} value={j.id}>{jobLabel(j)}</option>)}
         </select>
+      </div>
+      <div className="field">
+        <label>Site address</label>
+        {linkedJob && <ChoiceButtons value={addrMode} onChange={setAddrMode} options={[["job", "Same as job address", TOKENS.accent2], ["other", "Different address"]]} />}
+        {useJobAddress ? (
+          <div style={{ fontSize: 12.5, color: linkedJob.address ? TOKENS.slate : TOKENS.red, marginTop: 6, display: "flex", gap: 5 }}>
+            <MapPin size={14} style={{ flexShrink: 0, marginTop: 1 }} />{linkedJob.address || "This job has no address yet — choose Different address."}
+          </div>
+        ) : (
+          <input value={address} onChange={(e) => setAddress(e.target.value)} placeholder="Address incl. postcode (for directions)" style={{ marginTop: linkedJob ? 8 : 0 }} />
+        )}
       </div>
       <div className="field"><label>Notes</label><textarea rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Access instructions, parts to bring…" /></div>
 
@@ -2479,7 +2520,7 @@ function VisitCard({ ev, job, user, onEdit, onOpenJob, onLogWork, onMarkOutcome,
           {!office && onLogWork && <button className="btn" onClick={() => onLogWork(job, ev.date)} style={{ fontSize: 11.5, padding: "5px 10px", minHeight: "auto" }}>Log work</button>}
         </div>
       )}
-      {!office && job?.address && <div style={{ marginTop: 8 }}><AddressLinks address={job.address} phone={job.phone} compact /></div>}
+      {!office && eventAddress(ev, job) && <div style={{ marginTop: 8 }}><AddressLinks address={eventAddress(ev, job)} phone={job?.phone} compact /></div>}
 
       {!ev.outcome && (
         office ? (
@@ -2515,8 +2556,8 @@ function MyDayView({ me, events, jobById, userById, isAdmin, onEdit, onOpenJob, 
   const left = list.filter((e) => !e.outcome).length;
 
   const card = (ev, showDate) => (
-    <VisitCard key={ev.id} ev={ev} job={ev.jobId ? jobById[ev.jobId] : null} user={userById[ev.assignedTo]} showDate={showDate}
-      onEdit={onEdit} onOpenJob={onOpenJob} onLogWork={onLogWork} onMarkOutcome={onMarkOutcome} />
+    <VisitRow key={ev.id} ev={ev} job={ev.jobId ? jobById[ev.jobId] : null} user={userById[ev.assignedTo]} showDate={showDate}
+      onOpen={onEdit} onMarkOutcome={onMarkOutcome} />
   );
 
   return (
@@ -2533,7 +2574,7 @@ function MyDayView({ me, events, jobById, userById, isAdmin, onEdit, onOpenJob, 
       {unmarked.length > 0 && day === "today" && (
         <div style={{ marginBottom: 18 }}>
           <div style={{ fontSize: 11.5, fontWeight: 700, color: TOKENS.red, textTransform: "uppercase", marginBottom: 6 }}>Still to mark ({unmarked.length})</div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>{unmarked.map((ev) => card(ev, true))}</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>{unmarked.map((ev) => card(ev, true))}</div>
         </div>
       )}
 
@@ -2542,7 +2583,10 @@ function MyDayView({ me, events, jobById, userById, isAdmin, onEdit, onOpenJob, 
           Nothing booked for you {day === "today" ? "today" : "tomorrow"}.
         </div>
       ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>{list.map((ev) => card(ev, false))}</div>
+        <>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>{list.map((ev) => card(ev, false))}</div>
+          <div style={{ fontSize: 11.5, color: TOKENS.slateLight, marginTop: 8 }}>Tap a visit for the address, directions and notes.</div>
+        </>
       )}
 
       <button className="btn btn-primary" style={{ width: "100%", marginTop: 14 }} onClick={() => onNewEvent(key)}>+ Book a visit</button>
@@ -2724,6 +2768,170 @@ function MoreSheet({ items, view, setView, onClose }) {
           ))}
         </div>
       </div>
+    </div>
+  );
+}
+
+
+/* ================= COMPACT DIARY ROW + DETAILS SHEET ================= */
+const tickBtn = (colour) => ({ width: 46, height: 46, borderRadius: 10, border: `2px solid ${colour}`, background: `${colour}12`, color: colour, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, padding: 0 });
+
+function OutcomeIcon({ ev }) {
+  const office = isOfficeKind(ev.kind);
+  if (ev.outcome === "completed") return <span title={office ? "Sent" : "Done"} style={{ display: "flex", alignItems: "center", gap: 4, color: TOKENS.green, fontSize: 12, fontWeight: 700, flexShrink: 0 }}><CheckCircle2 size={22} />{office ? "Sent" : "Done"}</span>;
+  if (ev.outcome === "rejected") return <span title="Not done" style={{ display: "flex", alignItems: "center", gap: 4, color: TOKENS.red, fontSize: 12, fontWeight: 700, flexShrink: 0 }}><XCircle size={22} />Not done</span>;
+  return null;
+}
+
+function TickCross({ ev, onMarkOutcome }) {
+  if (ev.outcome) return <OutcomeIcon ev={ev} />;
+  const stop = (fn) => (e) => { e.stopPropagation(); fn(); };
+  if (isOfficeKind(ev.kind)) {
+    return <button aria-label="Mark sent" title="Mark sent" onClick={stop(() => onMarkOutcome(ev, "completed"))} style={tickBtn(TOKENS.green)}><Check size={24} strokeWidth={3} /></button>;
+  }
+  return (
+    <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+      <button aria-label="Done" title="Done" onClick={stop(() => onMarkOutcome(ev, "completed"))} style={tickBtn(TOKENS.green)}><Check size={24} strokeWidth={3} /></button>
+      <button aria-label="Not done" title="Not done" onClick={stop(() => onMarkOutcome(ev, "rejected"))} style={tickBtn(TOKENS.red)}><X size={24} strokeWidth={3} /></button>
+    </div>
+  );
+}
+
+function VisitRow({ ev, job, user, onOpen, onMarkOutcome, showDate }) {
+  const office = isOfficeKind(ev.kind);
+  const place = shortPlace(eventAddress(ev, job));
+  const edge = ev.outcome === "rejected" ? TOKENS.red : ev.outcome === "completed" ? TOKENS.green : office ? TOKENS.amber : user?.colour || TOKENS.slate;
+  return (
+    <div role="button" tabIndex={0} onClick={() => onOpen(ev)} onKeyDown={(e) => { if (e.key === "Enter") onOpen(ev); }}
+      style={{ display: "flex", alignItems: "center", gap: 10, background: "white", border: `1px solid ${TOKENS.line}`, borderLeft: `4px solid ${edge}`, borderRadius: 8, padding: "7px 8px 7px 10px", cursor: "pointer", minHeight: 60 }}>
+      <div className="ticket" style={{ width: 44, flexShrink: 0, fontSize: 13, fontWeight: 600, lineHeight: 1.25 }}>
+        {showDate && <div style={{ fontSize: 10.5, color: TOKENS.red }}>{fromKey(ev.date).toLocaleDateString("en-GB", { day: "numeric", month: "short" })}</div>}
+        {ev.time || (office ? "Fri" : "—")}
+      </div>
+      <div style={{ flex: 1, minWidth: 0, opacity: ev.outcome ? 0.7 : 1 }}>
+        <div style={{ fontSize: 14, fontWeight: 700, lineHeight: 1.25, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
+          {office && <span style={{ color: TOKENS.amber, fontSize: 10, fontWeight: 800, letterSpacing: ".04em", marginRight: 5 }}>OFFICE</span>}{ev.title}
+        </div>
+        <div style={{ fontSize: 12, color: TOKENS.slate, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+          {user?.name?.split(" ")[0] || "Unassigned"}{place ? ` · ${place}` : ""}
+        </div>
+      </div>
+      <TickCross ev={ev} onMarkOutcome={onMarkOutcome} />
+    </div>
+  );
+}
+
+function VisitSheet({ ev, job, user, onClose, onEdit, onOpenJob, onLogWork, onMarkOutcome }) {
+  const office = isOfficeKind(ev.kind);
+  const addr = eventAddress(ev, job);
+  const bigBtn = (colour) => ({ flex: 1, minHeight: 50, borderRadius: 9, border: `2px solid ${colour}`, background: `${colour}12`, color: colour, fontWeight: 700, fontSize: 15, display: "flex", alignItems: "center", justifyContent: "center", gap: 6 });
+  return (
+    <ModalShell title={ev.title} onClose={onClose}>
+      <div style={{ fontSize: 13.5, color: TOKENS.slate, marginTop: -6, marginBottom: 14, lineHeight: 1.5 }}>
+        {office && <span style={{ color: TOKENS.amber, fontWeight: 800, fontSize: 11, letterSpacing: ".04em" }}>OFFICE TASK · </span>}
+        {dayLabel(fromKey(ev.date))}{ev.time ? ` · ${ev.time}` : ""}{ev.duration ? ` · ${ev.duration}` : ""}<br />
+        {user?.name || "Unassigned"}{office && ev.details?.fromEngineer ? ` · from ${ev.details.fromEngineer}` : ""}
+      </div>
+
+      {addr ? (
+        <div style={{ marginBottom: 14 }}><AddressLinks address={addr} phone={job?.phone} /></div>
+      ) : (
+        <div style={{ fontSize: 12.5, color: TOKENS.slateLight, marginBottom: 14 }}>
+          No site address on this booking. <button className="btn-ghost" onClick={onEdit} style={{ padding: 0, fontWeight: 700, color: TOKENS.accent2 }}>Add one →</button>
+          {job?.phone && <div style={{ marginTop: 8 }}><AddressLinks phone={job.phone} /></div>}
+        </div>
+      )}
+
+      {ev.notes && <div style={{ fontSize: 13.5, whiteSpace: "pre-wrap", background: office ? `${TOKENS.amber}10` : TOKENS.paper, borderRadius: 8, padding: "9px 11px", marginBottom: 12 }}>{ev.notes}</div>}
+
+      {ev.outcome && (
+        <div style={{ fontSize: 13.5, color: ev.outcome === "completed" ? TOKENS.green : TOKENS.red, marginBottom: 12, display: "flex", gap: 6, alignItems: "flex-start" }}>
+          {ev.outcome === "completed" ? <CheckCircle2 size={18} style={{ flexShrink: 0 }} /> : <XCircle size={18} style={{ flexShrink: 0 }} />}
+          <span><strong>{office ? "Sent" : ev.outcome === "completed" ? "Done" : "Not done"}</strong>{ev.outcomeNote ? ` — ${ev.outcomeNote}` : ""}</span>
+        </div>
+      )}
+
+      {job && (
+        <button className="btn" onClick={() => onOpenJob(job.id)} style={{ width: "100%", textAlign: "left", marginBottom: 10, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <span><span className="ticket" style={{ color: TOKENS.accent, fontWeight: 700 }}>{job.number}</span> · {job.customer}</span><span style={{ color: TOKENS.accent2 }}>Open job →</span>
+        </button>
+      )}
+
+      {!ev.outcome && (
+        office ? (
+          <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+            <button onClick={() => onMarkOutcome(ev, "completed")} style={bigBtn(TOKENS.green)}><Check size={22} strokeWidth={3} /> Mark sent</button>
+          </div>
+        ) : (
+          <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+            <button onClick={() => onMarkOutcome(ev, "completed")} style={bigBtn(TOKENS.green)}><Check size={22} strokeWidth={3} /> Done</button>
+            <button onClick={() => onMarkOutcome(ev, "rejected")} style={bigBtn(TOKENS.red)}><X size={22} strokeWidth={3} /> Not done</button>
+          </div>
+        )
+      )}
+
+      <div style={{ display: "flex", gap: 8 }}>
+        {job && !office && <button className="btn" style={{ flex: 1 }} onClick={() => onLogWork(job, ev.date)}>Log work</button>}
+        <button className="btn" style={{ flex: 1 }} onClick={onEdit}>Edit booking</button>
+      </div>
+    </ModalShell>
+  );
+}
+
+function FeedbackRow({ ev, user, onOpen, onMarkOutcome }) {
+  const office = isOfficeKind(ev.kind);
+  const edge = ev.outcome === "completed" ? TOKENS.green : ev.outcome === "rejected" ? TOKENS.red : office ? TOKENS.amber : TOKENS.line;
+  return (
+    <div style={{ display: "flex", gap: 10, alignItems: "center", background: "white", border: `1px solid ${TOKENS.line}`, borderLeft: `4px solid ${edge}`, borderRadius: 8, padding: "8px 8px 8px 10px" }}>
+      <div onClick={() => onOpen(ev)} style={{ flex: 1, minWidth: 0, cursor: "pointer" }}>
+        <div style={{ fontSize: 13, fontWeight: 700 }}>{shortDate(ev.date)}{ev.time ? ` · ${ev.time}` : ""} — {ev.title}</div>
+        <div style={{ fontSize: 11.5, color: TOKENS.slate }}>{user?.name || "Unassigned"}{office && !ev.outcome ? " · office to do" : ""}</div>
+        {ev.outcomeNote && <div style={{ fontSize: 13, marginTop: 4, whiteSpace: "pre-wrap" }}>{ev.outcomeNote}</div>}
+        {ev.details?.finished && ev.details?.invoiceNotes && <div style={{ fontSize: 12.5, marginTop: 3, color: TOKENS.green }}><strong>To invoice:</strong> {ev.details.invoiceNotes}</div>}
+        {ev.details?.quoteBy && <div style={{ fontSize: 12, marginTop: 3, color: TOKENS.slate }}>{ev.details.quoteBy === "office" ? "Office to price & send" : "Engineer pricing it"}</div>}
+        {ev.signaturePath && <SignatureThumb path={ev.signaturePath} name={ev.signedName} />}
+      </div>
+      {!ev.outcome && !office && ev.date > toKey(new Date())
+        ? <span style={{ fontSize: 12, fontWeight: 700, color: TOKENS.slateLight, flexShrink: 0 }}>Booked</span>
+        : <TickCross ev={ev} onMarkOutcome={onMarkOutcome} />}
+    </div>
+  );
+}
+
+function SiteAddress({ job, customer, onSave }) {
+  const [editing, setEditing] = useState(false);
+  const [val, setVal] = useState(job.address || "");
+  useEffect(() => { setVal(job.address || ""); }, [job.address]);
+  const custAddr = (customer?.address || "").trim();
+  const differs = custAddr && (job.address || "").trim().toLowerCase() !== custAddr.toLowerCase();
+  const label = <div style={{ fontSize: 11, fontWeight: 700, color: TOKENS.slateLight, textTransform: "uppercase", marginBottom: 4 }}>Job site address</div>;
+
+  if (editing) {
+    return (
+      <div>
+        {label}
+        <input autoFocus value={val} onChange={(e) => setVal(e.target.value)} placeholder="Site address incl. postcode" />
+        <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
+          <button className="btn btn-primary" onClick={() => { onSave(val.trim()); setEditing(false); }}>Save</button>
+          {custAddr && <button className="btn" onClick={() => setVal(custAddr)}>Same as customer address</button>}
+          <button className="btn-ghost" onClick={() => { setVal(job.address || ""); setEditing(false); }}>Cancel</button>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+        {label}
+        <button className="btn-ghost" onClick={() => setEditing(true)} style={{ fontSize: 12, fontWeight: 700, color: TOKENS.accent2, padding: 0 }}>{job.address ? "Change" : "+ Add"}</button>
+      </div>
+      {job.address ? <AddressLinks address={job.address} phone={job.phone} /> : (
+        <>
+          <div style={{ fontSize: 13, color: TOKENS.slateLight, marginBottom: 6 }}>No site address yet.</div>
+          {job.phone && <AddressLinks phone={job.phone} />}
+        </>
+      )}
+      {differs && <div style={{ fontSize: 12, color: TOKENS.slateLight, marginTop: 6 }}>Customer's own address: {custAddr}</div>}
     </div>
   );
 }
